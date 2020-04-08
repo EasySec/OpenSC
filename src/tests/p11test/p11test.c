@@ -26,12 +26,16 @@
 #include "p11test_case_readonly.h"
 #include "p11test_case_multipart.h"
 #include "p11test_case_ec_sign.h"
+#include "p11test_case_ec_derive.h"
 #include "p11test_case_usage.h"
 #include "p11test_case_mechs.h"
 #include "p11test_case_wait.h"
 #include "p11test_case_pss_oaep.h"
 
 #define DEFAULT_P11LIB	"../../pkcs11/.libs/opensc-pkcs11.so"
+
+/* Global variable keeping information about token we are using */
+token_info_t token;
 
 void display_usage() {
 	fprintf(stdout,
@@ -48,7 +52,7 @@ void display_usage() {
 }
 
 int main(int argc, char** argv) {
-	char command;
+	signed char command;
 	const struct CMUnitTest readonly_tests_without_initialization[] = {
 		/* Test card events on slot */
 		cmocka_unit_test_setup_teardown(wait_test,
@@ -76,6 +80,10 @@ int main(int argc, char** argv) {
 
 		/* Verify that RSA-PSS and RSA-OAEP functions if supported */
 		cmocka_unit_test_setup_teardown(pss_oaep_test,
+			user_login_setup, after_test_cleanup),
+
+		/* Verify that ECDH key derivation works */
+		cmocka_unit_test_setup_teardown(derive_tests,
 			user_login_setup, after_test_cleanup),
 	};
 

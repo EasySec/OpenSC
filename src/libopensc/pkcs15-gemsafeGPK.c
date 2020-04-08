@@ -35,8 +35,6 @@
 
 #define MANU_ID		"GemSAFE on GPK16000"
 
-int sc_pkcs15emu_gemsafeGPK_init_ex(sc_pkcs15_card_t *, struct sc_aid *, sc_pkcs15emu_opt_t *);
-
 static int (*pin_cmd_save)(struct sc_card *, struct sc_pin_cmd_data *, 
 		int *tries_left);
 
@@ -207,7 +205,7 @@ static int sc_pkcs15emu_gemsafeGPK_init(sc_pkcs15_card_t *p15card)
 
 	u8 sysrec[7];
 	int num_keyinfo = 0;
-	keyinfo kinfo[8]; /* will loook for 8 keys */
+	keyinfo kinfo[8]; /* will look for 8 keys */
 	u8 modulus_buf[ 1 + 1024 / 8]; /* tag+modulus */
 	u8 *cp;
 	char buf[256];
@@ -362,14 +360,14 @@ static int sc_pkcs15emu_gemsafeGPK_init(sc_pkcs15_card_t *p15card)
 			}
 
 			if ( gsdata[idx1] == 0x30 &&
-				is_seq(gsdata + idx1, &seq_size1, &seq_len1) &&
-			 	is_seq(gsdata + idx1 + seq_size1, &seq_size2, &seq_len2) &&
-			    gsdata[idx1 + seq_size1 + seq_size2 + 0] == 0xa0 &&
-				gsdata[idx1 + seq_size1 + seq_size2 + 1] == 0x03 &&
-				gsdata[idx1 + seq_size1 + seq_size2 + 2] == 0x02 &&
-				gsdata[idx1 + seq_size1 + seq_size2 + 3] == 0x01 &&
-				gsdata[idx1 + seq_size1 + seq_size2 + 4] == 0x02 &&
-				idx1 + 4 + seq_len1 < file->size) {
+					is_seq(gsdata + idx1, &seq_size1, &seq_len1) &&
+					is_seq(gsdata + idx1 + seq_size1, &seq_size2, &seq_len2) &&
+					gsdata[idx1 + seq_size1 + seq_size2 + 0] == 0xa0 &&
+					gsdata[idx1 + seq_size1 + seq_size2 + 1] == 0x03 &&
+					gsdata[idx1 + seq_size1 + seq_size2 + 2] == 0x02 &&
+					gsdata[idx1 + seq_size1 + seq_size2 + 3] == 0x01 &&
+					gsdata[idx1 + seq_size1 + seq_size2 + 4] == 0x02 &&
+					idx1 + 4 + seq_len1 < file->size) {
 				/* we have a cert (I hope) */
 				/* read in rest if needed */
 				idxlen = idx1 + seq_len1 + 4 - idx2; 
@@ -388,7 +386,7 @@ static int sc_pkcs15emu_gemsafeGPK_init(sc_pkcs15_card_t *p15card)
 					return SC_ERROR_OUT_OF_MEMORY;
 
 				memcpy(cert_info.value.value, gsdata + idx1, cert_info.value.len);
-			idx1 = idx1 + cert_info.value.len;
+				idx1 = idx1 + cert_info.value.len;
 				break;
 			}
 			idx1++;
@@ -509,20 +507,14 @@ static int sc_pkcs15emu_gemsafeGPK_init(sc_pkcs15_card_t *p15card)
 	return SC_SUCCESS;
 }
 
-int sc_pkcs15emu_gemsafeGPK_init_ex(sc_pkcs15_card_t *p15card, struct sc_aid *aid,
-				  sc_pkcs15emu_opt_t *opts)
+int sc_pkcs15emu_gemsafeGPK_init_ex(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 {
 	sc_card_t   *card = p15card->card;
 	sc_context_t    *ctx = card->ctx;
 
 	sc_log(ctx,  "Entering %s", __FUNCTION__);
 
-	if (opts && opts->flags & SC_PKCS15EMU_FLAGS_NO_CHECK)
-		return sc_pkcs15emu_gemsafeGPK_init(p15card);
-	else {
-		int r = gemsafe_detect_card(p15card);
-		if (r)
-			return SC_ERROR_WRONG_CARD;
-		return sc_pkcs15emu_gemsafeGPK_init(p15card);
-	}
+	if (gemsafe_detect_card(p15card))
+		return SC_ERROR_WRONG_CARD;
+	return sc_pkcs15emu_gemsafeGPK_init(p15card);
 }

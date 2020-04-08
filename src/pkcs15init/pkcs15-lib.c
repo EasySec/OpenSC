@@ -157,6 +157,7 @@ static struct profile_operations {
 	{ "entersafe",(void*) sc_pkcs15init_get_entersafe_ops },
 	{ "epass2003",(void*) sc_pkcs15init_get_epass2003_ops },
 	{ "rutoken_ecp", (void *) sc_pkcs15init_get_rtecp_ops },
+	{ "rutoken_lite", (void *) sc_pkcs15init_get_rtecp_ops },
 	{ "westcos", (void *) sc_pkcs15init_get_westcos_ops },
 	{ "myeid", (void *) sc_pkcs15init_get_myeid_ops },
 	{ "sc-hsm", (void *) sc_pkcs15init_get_sc_hsm_ops },
@@ -871,11 +872,7 @@ sc_pkcs15init_add_app(struct sc_card *card, struct sc_profile *profile,
 		sc_pkcs15_free_object(pin_obj);
 	LOG_TEST_RET(ctx, r, "Card specific create application DF failed");
 
-	/* Store the PKCS15 information on the card
-	 * We cannot use sc_pkcs15_create() because it makes
-	 * all sorts of assumptions about DF and EF names, and
-	 * doesn't work if secure messaging is required for the
-	 * MF (which is the case with the GPK) */
+	/* Store the PKCS15 information on the card */
 	app = (struct sc_app_info *)calloc(1, sizeof(*app));
 	if (app == NULL)
 		LOG_TEST_RET(ctx, SC_ERROR_OUT_OF_MEMORY, "Failed to allocate application info");
@@ -1874,7 +1871,7 @@ sc_pkcs15init_store_public_key(struct sc_pkcs15_card *p15card, struct sc_profile
 	profile->dirty = 1;
 
 err:
-	if (object && r < 0)
+	if (r < 0)
 		sc_pkcs15init_free_object(object);
 
 	LOG_FUNC_RETURN(ctx, r);

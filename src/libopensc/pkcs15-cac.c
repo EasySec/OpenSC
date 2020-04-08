@@ -45,9 +45,6 @@
 /* probably should get manufacturer ID from cuid */
 #define MANU_ID		"Common Access Card"
 
-int sc_pkcs15emu_cac_init_ex(sc_pkcs15_card_t *, struct sc_aid *, sc_pkcs15emu_opt_t *);
-
-
 
 typedef struct pdata_st {
 	const char *id;
@@ -85,89 +82,6 @@ static const char * cac_get_name(int type)
     default: break;
     }
     return ("CAC");
-}
-
-/*
- * These could move to a helper file for other cards that wish to use usage as a way of getting flags
- */
-
-/* Only certain usages are valid for a given algorithm, return all the usages that the algorithm supports so we
- * can use it as a filter for all the public and private key usages */
-static unsigned int
-cac_alg_flags_from_algorithm(int algorithm)
-{
-	switch (algorithm) {
-	case SC_ALGORITHM_RSA:
-		return SC_PKCS15_PRKEY_USAGE_ENCRYPT | SC_PKCS15_PRKEY_USAGE_WRAP |
-		       SC_PKCS15_PRKEY_USAGE_VERIFY | SC_PKCS15_PRKEY_USAGE_VERIFYRECOVER |
-		       SC_PKCS15_PRKEY_USAGE_DECRYPT | SC_PKCS15_PRKEY_USAGE_UNWRAP |
-		       SC_PKCS15_PRKEY_USAGE_SIGN | SC_PKCS15_PRKEY_USAGE_SIGNRECOVER |
-		       SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-	case SC_ALGORITHM_DSA:
-		return SC_PKCS15_PRKEY_USAGE_VERIFY| SC_PKCS15_PRKEY_USAGE_SIGN |
-		       SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-#ifdef SC_ALGORITHM_DH
-	case SC_ALGORITHM_DH:
-		return SC_PKCS15_PRKEY_USAGE_DERIVE ;
-#endif
-	case SC_ALGORITHM_EC:
-		return SC_PKCS15_PRKEY_USAGE_DERIVE | SC_PKCS15_PRKEY_USAGE_VERIFY|
-		       SC_PKCS15_PRKEY_USAGE_SIGN | SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-	case SC_ALGORITHM_GOSTR3410:
-		return SC_PKCS15_PRKEY_USAGE_DERIVE | SC_PKCS15_PRKEY_USAGE_VERIFY|
-		       SC_PKCS15_PRKEY_USAGE_SIGN | SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-	}
-	return 0;
-}
-
-/* These are the cert key usage bits that map to various PKCS #11 (and thus PKCS #15) flags */
-#define CAC_X509_USAGE_SIGNATURE \
-	(SC_X509_DIGITAL_SIGNATURE | \
-	SC_X509_NON_REPUDIATION    | \
-	SC_X509_KEY_CERT_SIGN      | \
-	SC_X509_CRL_SIGN)
-#define CAC_X509_USAGE_DERIVE \
-	SC_X509_KEY_AGREEMENT
-#define CAC_X509_USAGE_UNWRAP \
-	(SC_X509_KEY_ENCIPHERMENT | \
-	SC_X509_KEY_AGREEMENT)
-#define CAC_X509_USAGE_DECRYPT \
-	(SC_X509_DATA_ENCIPHERMENT | \
-	SC_X509_ENCIPHER_ONLY)
-#define CAC_X509_USAGE_NONREPUDIATION \
-	SC_X509_NON_REPUDIATION
-
-/* map a cert usage and algorithm to public and private key usages */
-static int
-cac_map_usage(unsigned int cert_usage, int algorithm, unsigned int *pub_usage_ptr, unsigned int *pr_usage_ptr, int allow_nonrepudiation)
-{
-	unsigned int pub_usage = 0, pr_usage = 0;
-	unsigned int alg_flags = cac_alg_flags_from_algorithm(algorithm);
-
-	if (cert_usage & CAC_X509_USAGE_SIGNATURE) {
-		pub_usage |= SC_PKCS15_PRKEY_USAGE_VERIFY|SC_PKCS15_PRKEY_USAGE_VERIFYRECOVER;
-		pr_usage |= SC_PKCS15_PRKEY_USAGE_SIGN|SC_PKCS15_PRKEY_USAGE_SIGNRECOVER;
-	}
-	if (cert_usage & CAC_X509_USAGE_DERIVE) {
-		pub_usage |= SC_PKCS15_PRKEY_USAGE_DERIVE;
-		pr_usage |= SC_PKCS15_PRKEY_USAGE_DERIVE;
-	}
-	if (cert_usage & (CAC_X509_USAGE_DECRYPT|CAC_X509_USAGE_UNWRAP)) {
-		pub_usage |= SC_PKCS15_PRKEY_USAGE_ENCRYPT;
-		pr_usage |= SC_PKCS15_PRKEY_USAGE_DECRYPT;
-	}
-	if (allow_nonrepudiation && (cert_usage & CAC_X509_USAGE_NONREPUDIATION)) {
-		pub_usage |= SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-		pr_usage |= SC_PKCS15_PRKEY_USAGE_NONREPUDIATION;
-	}
-	/* filter usages algorithm */
-	if (pub_usage_ptr) {
-		*pub_usage_ptr = pub_usage & alg_flags;
-	}
-	if (pr_usage_ptr) {
-		*pr_usage_ptr = pr_usage & alg_flags;
-	}
-	return SC_SUCCESS;
 }
 
 static int sc_pkcs15emu_cac_init(sc_pkcs15_card_t *p15card)
@@ -369,6 +283,7 @@ static int sc_pkcs15emu_cac_init(sc_pkcs15_card_t *p15card)
 			sc_log(card->ctx,  "Failed to read/parse the certificate r=%d",r);
 			if (cert_out != NULL)
 				sc_pkcs15_free_certificate(cert_out);
+			free(cert_info.value.value);
 			continue;
 		}
 
@@ -376,6 +291,7 @@ static int sc_pkcs15emu_cac_init(sc_pkcs15_card_t *p15card)
 		if (r < 0) {
 			sc_log(card->ctx,  " Failed to add cert obj r=%d",r);
 			sc_pkcs15_free_certificate(cert_out);
+			free(cert_info.value.value);
 			continue;
 		}
 		/* set the token name to the name of the CN of the first certificate */
@@ -408,9 +324,9 @@ static int sc_pkcs15emu_cac_init(sc_pkcs15_card_t *p15card)
 
 		r = sc_pkcs15_get_bitstring_extension(card->ctx, cert_out, &usage_type, &usage, NULL);
 		if (r < 0) {
-			usage = 0xd9ULL; /* basic default usage */
+			usage = SC_X509_DATA_ENCIPHERMENT|SC_X509_DIGITAL_SIGNATURE; /* basic default usage */
 		}
-		cac_map_usage(usage, cert_out->key->algorithm, &pubkey_info.usage, &prkey_info.usage, 1);
+		sc_pkcs15_map_usage(usage, cert_out->key->algorithm, &pubkey_info.usage, &prkey_info.usage, 1);
 		sc_log(card->ctx,   "cert %s: cert_usage=0x%x, pub_usage=0x%x priv_usage=0x%x\n",
 				sc_dump_hex(cert_info.id.value, cert_info.id.len),
 				 usage, pubkey_info.usage, prkey_info.usage);
@@ -443,19 +359,14 @@ fail:
 }
 
 int sc_pkcs15emu_cac_init_ex(sc_pkcs15_card_t *p15card,
-		struct sc_aid *aid, sc_pkcs15emu_opt_t *opts)
+		struct sc_aid *aid)
 {
 	sc_card_t   *card = p15card->card;
 	sc_context_t    *ctx = card->ctx;
 
 	LOG_FUNC_CALLED(ctx);
 
-	if (opts && opts->flags & SC_PKCS15EMU_FLAGS_NO_CHECK)
-		return sc_pkcs15emu_cac_init(p15card);
-	else {
-		int r = cac_detect_card(p15card);
-		if (r)
-			return SC_ERROR_WRONG_CARD;
-		return sc_pkcs15emu_cac_init(p15card);
-	}
+	if (cac_detect_card(p15card))
+		return SC_ERROR_WRONG_CARD;
+	return sc_pkcs15emu_cac_init(p15card);
 }

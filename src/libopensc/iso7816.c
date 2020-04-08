@@ -147,7 +147,10 @@ iso7816_read_binary(struct sc_card *card, unsigned int idx, u8 *buf, size_t coun
 		return SC_ERROR_OFFSET_TOO_LARGE;
 	}
 
-	sc_format_apdu_ex(card, &apdu, 0xB0, (idx >> 8) & 0x7F, idx & 0xFF, NULL, 0, buf, count);
+	sc_format_apdu(card, &apdu, SC_APDU_CASE_2, 0xB0, (idx >> 8) & 0x7F, idx & 0xFF);
+	apdu.le = count;
+	apdu.resplen = count;
+	apdu.resp = buf;
 
 	fixup_transceive_length(card, &apdu);
 	r = sc_transmit_apdu(card, &apdu);
@@ -355,7 +358,7 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 				/* fall through */
 			case 0x80:
 				/* determine the file size */
-				if (sc_asn1_decode_integer(p, length, &size) == 0 && size >= 0) {
+				if (sc_asn1_decode_integer(p, length, &size, 0) == 0 && size >= 0) {
 					file->size = size;
 					sc_log(ctx, "  bytes in file: %"SC_FORMAT_LEN_SIZE_T"u",
 							file->size);
@@ -384,13 +387,36 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 							file->type = SC_FILE_TYPE_DF;
 							break;
 						default:
+							file->type = SC_FILE_TYPE_UNKNOWN;
 							type = "unknown";
 							break;
 					}
 					sc_log(ctx, "  type: %s", type);
 					sc_log(ctx, "  EF structure: %d", byte & 0x07);
 					sc_log(ctx, "  tag 0x82: 0x%02x", byte);
-					if (SC_SUCCESS != sc_file_set_type_attr(file, &byte, 1))
+
+					/* if possible, get additional information for non-DFs */
+					if (file->type != SC_FILE_TYPE_DF) {
+						/* record length for fixed size records */
+						if (length > 2 && byte & 0x02) {
+							file->record_length = (length > 3)
+								? bebytes2ushort(p+2)
+								: p[2];
+							sc_log(ctx, "  record length: %"SC_FORMAT_LEN_SIZE_T"u",
+								file->record_length);
+						}
+
+						/* number of records */
+						if (length > 4) {
+							file->record_count = (length > 5)
+								? bebytes2ushort(p+4)
+								: p[4];
+							sc_log(ctx, "  records: %"SC_FORMAT_LEN_SIZE_T"u",
+								file->record_count);
+						}
+					}
+
+					if (SC_SUCCESS != sc_file_set_type_attr(file, p, length))
 						sc_log(ctx, "Warning: Could not set file attributes");
 				}
 				break;
@@ -1496,7 +1522,7 @@ int iso7816_logout(sc_card_t *card, unsigned char pin_reference)
 	int r;
 	sc_apdu_t apdu;
 
-	sc_format_apdu_ex(card, &apdu, 0x20, 0xFF, pin_reference, NULL, 0, NULL, 0);
+	sc_format_apdu(card, &apdu, SC_APDU_CASE_1, 0x20, 0xFF, pin_reference);
 
 	r = sc_transmit_apdu(card, &apdu);
 	if (r < 0)

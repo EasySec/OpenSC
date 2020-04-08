@@ -123,7 +123,7 @@ static int atrust_acos_init(struct sc_card *card)
 		| SC_ALGORITHM_RSA_HASH_RIPEMD160
 		| SC_ALGORITHM_RSA_HASH_MD5_SHA1;
 
-	if (!strcmp(card->name, ACOS_EMV_A05))
+	if (card->name != NULL && !strcmp(card->name, ACOS_EMV_A05))
 		flags |= SC_ALGORITHM_RSA_HASH_SHA256;
 
 	_sc_card_add_rsa_alg(card, 1536, flags, 0x10001);
@@ -445,8 +445,7 @@ static int atrust_acos_select_file(struct sc_card *card,
 		{
 			n_pathbuf[0] = 0x3f;
 			n_pathbuf[1] = 0x00;
-			for (i=0; i< pathlen; i++)
-				n_pathbuf[i+2] = pathbuf[i];
+			memcpy(n_pathbuf+2, path, pathlen);
 			path = n_pathbuf;
 			pathlen += 2; 
 		}

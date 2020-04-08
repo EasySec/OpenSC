@@ -464,6 +464,20 @@ typedef unsigned long ck_attribute_type_t;
 #define CKA_SUPPORTED_CMS_ATTRIBUTES	(0x503UL)
 #define CKA_WRAP_TEMPLATE		(CKF_ARRAY_ATTRIBUTE | 0x211UL)
 #define CKA_UNWRAP_TEMPLATE		(CKF_ARRAY_ATTRIBUTE | 0x212UL)
+#define CKA_OTP_FORMAT			(0x220UL)
+#define CKA_OTP_LENGTH			(0x221UL)
+#define CKA_OTP_TIME_INTERVAL		(0x222UL)
+#define CKA_OTP_USER_FRIENDLY_MODE	(0x223UL)
+#define CKA_OTP_CHALLENGE_REQUIREMENT	(0x224UL)
+#define CKA_OTP_TIME_REQUIREMENT	(0x225UL)
+#define CKA_OTP_COUNTER_REQUIREMENT	(0x226UL)
+#define CKA_OTP_PIN_REQUIREMENT		(0x227UL)
+#define CKA_OTP_USER_IDENTIFIER		(0x22AUL)
+#define CKA_OTP_SERVICE_IDENTIFIER	(0x22BUL)
+#define CKA_OTP_SERVICE_LOGO		(0x22CUL)
+#define CKA_OTP_SERVICE_LOGO_TYPE	(0x22DUL)
+#define CKA_OTP_COUNTER			(0x22EUL)
+#define CKA_OTP_TIME			(0x22FUL)
 #define CKA_ALLOWED_MECHANISMS		(CKF_ARRAY_ATTRIBUTE | 0x600UL)
 #define CKA_VENDOR_DEFINED		(1UL << 31)
 
@@ -780,7 +794,12 @@ struct ck_mechanism_info
 #define CKF_DONT_BLOCK				(1UL)
 
 /* Flags for Key derivation */
-#define CKD_NULL			(1UL << 0)
+#define CKD_NULL			(0x1UL)
+#define CKD_SHA1_KDF			(0x2UL)
+#define CKD_SHA224_KDF			(0x5UL)
+#define CKD_SHA256_KDF			(0x6UL)
+#define CKD_SHA384_KDF			(0x7UL)
+#define CKD_SHA512_KDF			(0x8UL)
 
 typedef struct CK_ECDH1_DERIVE_PARAMS {
 	unsigned long  kdf;
@@ -789,6 +808,19 @@ typedef struct CK_ECDH1_DERIVE_PARAMS {
 	unsigned long  ulPublicDataLen;
 	unsigned char *  pPublicData;
 } CK_ECDH1_DERIVE_PARAMS;
+
+typedef struct CK_ECMQV_DERIVE_PARAMS {
+	unsigned long kdf;
+	unsigned long ulSharedDataLen;
+	unsigned char * pSharedData;
+	unsigned long ulPublicDataLen;
+	unsigned char * pPublicData;
+	unsigned long ulPrivateDataLen;
+	CK_OBJECT_HANDLE hPrivateData;
+	unsigned long ulPublicDataLen2;
+	unsigned char * pPublicData2;
+	CK_OBJECT_HANDLE publicKey;
+} CK_ECMQV_DERIVE_PARAMS;
 
 typedef unsigned long ck_rsa_pkcs_mgf_type_t;
 typedef unsigned long CK_RSA_PKCS_OAEP_SOURCE_TYPE;
@@ -814,6 +846,15 @@ typedef struct CK_RSA_PKCS_PSS_PARAMS {
 #define CKG_MGF1_SHA512		(0x00000004UL)
 
 #define CKZ_DATA_SPECIFIED	(0x00000001UL)
+
+typedef struct CK_GCM_PARAMS {
+	void * pIv;
+	unsigned long ulIvLen;
+	unsigned long ulIvBits;
+	void * pAAD;
+	unsigned long ulAADLen;
+	unsigned long ulTagBits;
+} CK_GCM_PARAMS;
 
 typedef unsigned long ck_rv_t;
 

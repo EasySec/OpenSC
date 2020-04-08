@@ -666,7 +666,7 @@ int sc_pkcs15_decipher(struct sc_pkcs15_card *p15card,
 int sc_pkcs15_derive(struct sc_pkcs15_card *p15card,
 		       const struct sc_pkcs15_object *prkey_obj,
 		       unsigned long flags,
-		       const u8 *in, size_t inlen, u8 *out, unsigned long *poutlen);
+		       const u8 *in, size_t inlen, u8 *out, size_t *poutlen);
 
 int sc_pkcs15_unwrap(struct sc_pkcs15_card *p15card,
 		const struct sc_pkcs15_object *key,
@@ -679,7 +679,7 @@ int sc_pkcs15_wrap(struct sc_pkcs15_card *p15card,
 		const struct sc_pkcs15_object *key,
 		struct sc_pkcs15_object *target_key,
 		unsigned long flags,
-		u8 * cryptogram, unsigned long* crgram_len,
+		u8 * cryptogram, size_t* crgram_len,
 		const u8 * param, size_t paramlen);
 
 int sc_pkcs15_compute_signature(struct sc_pkcs15_card *p15card,
@@ -754,6 +754,9 @@ int sc_pkcs15_get_name_from_dn(struct sc_context *ctx,
                               const u8 *dn, size_t dn_len,
                               const struct sc_object_id *type,
                               u8 **name, size_t *name_len);
+int sc_pkcs15_map_usage(unsigned int cert_usage, int algorithm,
+			unsigned int *pub_usage_ptr, unsigned int *pr_usage_ptr,
+			int allow_nonrepudiation);
 int sc_pkcs15_get_extension(struct sc_context *ctx,
                             struct sc_pkcs15_cert *cert,
                             const struct sc_object_id *type,
@@ -770,7 +773,6 @@ int sc_pkcs15_get_bitstring_extension(struct sc_context *ctx,
 int sc_pkcs15_create_cdf(struct sc_pkcs15_card *card,
 			 struct sc_file *file,
 			 const struct sc_pkcs15_cert_info **certs);
-int sc_pkcs15_create(struct sc_pkcs15_card *p15card, struct sc_card *card);
 
 int sc_pkcs15_find_prkey_by_id(struct sc_pkcs15_card *card,
 			       const struct sc_pkcs15_id *id,
@@ -886,13 +888,6 @@ int sc_pkcs15_decode_skdf_entry(struct sc_pkcs15_card *p15card,
 				 struct sc_pkcs15_object *obj,
 				 const u8 **buf, size_t *bufsize);
 
-int sc_pkcs15_decode_enveloped_data(struct sc_context *ctx,
-				    struct sc_pkcs15_enveloped_data *result,
-				    const u8 *buf, size_t buflen);
-int sc_pkcs15_encode_enveloped_data(struct sc_context *ctx,
-				    struct sc_pkcs15_enveloped_data *data,
-				    u8 **buf, size_t *buflen);
-
 int sc_pkcs15_add_object(struct sc_pkcs15_card *p15card,
 			 struct sc_pkcs15_object *obj);
 void sc_pkcs15_remove_object(struct sc_pkcs15_card *p15card,
@@ -1002,14 +997,6 @@ typedef struct sc_pkcs15_search_key {
 
 int sc_pkcs15_search_objects(struct sc_pkcs15_card *, sc_pkcs15_search_key_t *,
 			struct sc_pkcs15_object **, size_t);
-
-/* This structure is passed to the new sc_pkcs15emu_*_init functions */
-typedef struct sc_pkcs15emu_opt {
-	scconf_block *blk;
-	unsigned int flags;
-} sc_pkcs15emu_opt_t;
-
-#define SC_PKCS15EMU_FLAGS_NO_CHECK	0x00000001
 
 extern int sc_pkcs15_bind_synthetic(struct sc_pkcs15_card *, struct sc_aid *);
 extern int sc_pkcs15_is_emulation_only(sc_card_t *);

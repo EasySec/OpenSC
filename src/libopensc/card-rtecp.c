@@ -1,5 +1,5 @@
 /*
- * card-rtecp.c: Support for Rutoken ECP cards
+ * card-rtecp.c: Support for Rutoken ECP and Rutoken Lite cards
  *
  * Copyright (C) 2009  Aleksey Samsonov <samsonov@guardant.ru>
  *
@@ -35,7 +35,7 @@ static const struct sc_card_operations *iso_ops = NULL;
 static struct sc_card_operations rtecp_ops;
 
 static struct sc_card_driver rtecp_drv = {
-	"Rutoken ECP driver",
+	"Rutoken ECP and Lite driver",
 	"rutoken_ecp",
 	&rtecp_ops,
 	NULL, 0, NULL
@@ -44,18 +44,25 @@ static struct sc_card_driver rtecp_drv = {
 static const struct sc_atr_table rtecp_atrs[] = {
 	/* Rutoken ECP */
 	{ "3B:8B:01:52:75:74:6F:6B:65:6E:20:45:43:50:A0",
-		NULL, "Rutoken ECP", SC_CARD_TYPE_GENERIC_BASE, 0, NULL },
+		NULL, "Rutoken ECP", SC_CARD_TYPE_RUTOKEN_ECP, 0, NULL },
 	/* Rutoken ECP (DS) */
 	{ "3B:8B:01:52:75:74:6F:6B:65:6E:20:44:53:20:C1",
-		NULL, "Rutoken ECP (DS)", SC_CARD_TYPE_GENERIC_BASE, 0, NULL },
+		NULL, "Rutoken ECP (DS)", SC_CARD_TYPE_RUTOKEN_ECP, 0, NULL },
 	/* Rutoken ECP SC T0 */
 	{ "3B:9C:96:00:52:75:74:6F:6B:65:6E:45:43:50:73:63",
 		"00:00:00:00:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF",
-		"Rutoken ECP SC", SC_CARD_TYPE_GENERIC_BASE, 0, NULL },
+		"Rutoken ECP SC", SC_CARD_TYPE_RUTOKEN_ECP_SC, 0, NULL },
 	/* Rutoken ECP SC T1 */
 	{ "3B:9C:94:80:11:40:52:75:74:6F:6B:65:6E:45:43:50:73:63:C3",
 		"00:00:00:00:00:00:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:00",
-		"Rutoken ECP SC", SC_CARD_TYPE_GENERIC_BASE, 0, NULL },
+		"Rutoken ECP SC", SC_CARD_TYPE_RUTOKEN_ECP_SC, 0, NULL },
+	/* Rutoken Lite */
+	{ "3B:8B:01:52:75:74:6F:6B:65:6E:6C:69:74:65:C2",
+		NULL, "Rutoken Lite", SC_CARD_TYPE_RUTOKEN_LITE, 0, NULL },
+	/* Rutoken Lite SC*/
+	{ "3B:9E:96:00:52:75:74:6F:6B:65:6E:4C:69:74:65:53:43:32",
+		"00:00:00:00:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF",
+		"Rutoken Lite SC", SC_CARD_TYPE_RUTOKEN_LITE_SC, 0, NULL },
 	{ NULL, NULL, NULL, 0, 0, NULL }
 };
 
@@ -76,8 +83,13 @@ static int rtecp_init(sc_card_t *card)
 	unsigned long flags;
 
 	assert(card && card->ctx);
-	card->caps |= SC_CARD_CAP_RNG;
 	card->cla = 0;
+
+	if (card->type == SC_CARD_TYPE_RUTOKEN_LITE
+			|| card->type == SC_CARD_TYPE_RUTOKEN_LITE_SC)
+		SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, 0);
+
+	card->caps |= SC_CARD_CAP_RNG;
 
 	flags = SC_ALGORITHM_RSA_RAW | SC_ALGORITHM_ONBOARD_KEY_GEN
 		| SC_ALGORITHM_RSA_PAD_NONE | SC_ALGORITHM_RSA_HASH_NONE;
@@ -422,6 +434,11 @@ static int rtecp_decipher(sc_card_t *card,
 	int r;
 
 	assert(card && card->ctx && data && out);
+
+	if (card->type == SC_CARD_TYPE_RUTOKEN_LITE
+			|| card->type == SC_CARD_TYPE_RUTOKEN_LITE_SC)
+		SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, SC_ERROR_NOT_SUPPORTED);
+
 	/* decipher */
 	r = rtecp_cipher(card, data, data_len, out, out_len, 0);
 	SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, r);
@@ -433,6 +450,11 @@ static int rtecp_compute_signature(sc_card_t *card,
 	int r;
 
 	assert(card && card->ctx && data && out);
+
+	if (card->type == SC_CARD_TYPE_RUTOKEN_LITE
+			|| card->type == SC_CARD_TYPE_RUTOKEN_LITE_SC)
+		SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, SC_ERROR_NOT_SUPPORTED);
+
 	/* compute digital signature */
 	r = rtecp_cipher(card, data, data_len, out, out_len, 1);
 	SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, r);
@@ -567,7 +589,7 @@ static int rtecp_create_file(sc_card_t *card, sc_file_t *file)
 static int rtecp_list_files(sc_card_t *card, u8 *buf, size_t buflen)
 {
 	sc_apdu_t apdu;
-	u8 rbuf[SC_MAX_APDU_BUFFER_SIZE], previd[2];
+	u8 rbuf[SC_MAX_APDU_RESP_SIZE], previd[2];
 	const u8 *tag;
 	size_t taglen, len = 0;
 	int r;
@@ -578,7 +600,7 @@ static int rtecp_list_files(sc_card_t *card, u8 *buf, size_t buflen)
 	{
 		apdu.resp = rbuf;
 		apdu.resplen = sizeof(rbuf);
-		apdu.le = 256;
+		apdu.le = sizeof(rbuf);
 		r = sc_transmit_apdu(card, &apdu);
 		LOG_TEST_RET(card->ctx, r, "APDU transmit failed");
 		if (apdu.sw1 == 0x6A  &&  apdu.sw2 == 0x82)
@@ -610,7 +632,11 @@ static int rtecp_list_files(sc_card_t *card, u8 *buf, size_t buflen)
 		if (tag[0] == 0x38)
 		{
 			/* Select parent DF of the current DF */
-			sc_format_apdu(card, &apdu, SC_APDU_CASE_1, 0xA4, 0x03, 0);
+			sc_format_apdu(card, &apdu, SC_APDU_CASE_2_SHORT, 0xA4, 0x03, 0);
+			/* We should set le and resp buf to actually call Get Response for card on T0. */
+			apdu.resp = rbuf;
+			apdu.resplen = sizeof(rbuf);
+			apdu.le = sizeof(rbuf);
 			r = sc_transmit_apdu(card, &apdu);
 			LOG_TEST_RET(card->ctx, r, "APDU transmit failed");
 			r = sc_check_sw(card, apdu.sw1, apdu.sw2);
@@ -807,7 +833,5 @@ struct sc_card_driver * sc_get_rtecp_driver(void)
 	/* process_fci */
 	rtecp_ops.construct_fci = rtecp_construct_fci;
 	rtecp_ops.pin_cmd = NULL;
-
 	return &rtecp_drv;
 }
-

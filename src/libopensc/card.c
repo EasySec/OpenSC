@@ -28,6 +28,7 @@
 #include <unistd.h>
 #endif
 #include <string.h>
+#include <limits.h>
 
 #include "reader-tr03119.h"
 #include "internal.h"
@@ -67,27 +68,28 @@ void sc_format_apdu_cse_lc_le(struct sc_apdu *apdu)
 {
 	/* TODO calculating the APDU case, Lc and Le should actually only be
 	 * done in sc_apdu2bytes, but to gradually change OpenSC we start here. */
+	/* Let sc_detect_apdu_cse set short or extended  and test for chaining */
 
 	if (!apdu)
 		return;
 	if (apdu->datalen > SC_MAX_APDU_DATA_SIZE
 			|| apdu->resplen > SC_MAX_APDU_RESP_SIZE) {
-		/* extended length */
-		if (apdu->datalen < SC_MAX_EXT_APDU_DATA_SIZE)
+		/* extended length  or data chaining and/or get response */
+		if (apdu->datalen <= SC_MAX_EXT_APDU_DATA_SIZE)
 			apdu->lc = apdu->datalen;
-		if (apdu->resplen < SC_MAX_EXT_APDU_RESP_SIZE)
+		if (apdu->resplen <= SC_MAX_EXT_APDU_RESP_SIZE)
 			apdu->le = apdu->resplen;
 		if (apdu->resplen && !apdu->datalen)
-			apdu->cse = SC_APDU_CASE_2_EXT;
+			apdu->cse = SC_APDU_CASE_2;
 		if (!apdu->resplen && apdu->datalen)
-			apdu->cse = SC_APDU_CASE_3_EXT;
+			apdu->cse = SC_APDU_CASE_3;
 		if (apdu->resplen && apdu->datalen)
-			apdu->cse = SC_APDU_CASE_4_EXT;
+			apdu->cse = SC_APDU_CASE_4;
 	} else {
 		/* short length */
-		if (apdu->datalen < SC_MAX_APDU_DATA_SIZE)
+		if (apdu->datalen <= SC_MAX_APDU_DATA_SIZE)
 			apdu->lc = apdu->datalen;
-		if (apdu->resplen < SC_MAX_APDU_RESP_SIZE)
+		if (apdu->resplen <= SC_MAX_APDU_RESP_SIZE)
 			apdu->le = apdu->resplen;
 		if (!apdu->resplen && !apdu->datalen)
 			apdu->cse = SC_APDU_CASE_1;
@@ -100,16 +102,17 @@ void sc_format_apdu_cse_lc_le(struct sc_apdu *apdu)
 	}
 }
 
-void sc_format_apdu_ex(struct sc_card *card, struct sc_apdu *apdu,
-		u8 ins, u8 p1, u8 p2, const u8 *data, size_t datalen, u8 *resp, size_t resplen)
+void sc_format_apdu_ex(struct sc_apdu *apdu,
+		u8 cla, u8 ins, u8 p1, u8 p2,
+		const u8 *data, size_t datalen,
+		u8 *resp, size_t resplen)
 {
 	if (!apdu) {
 		return;
 	}
 
 	memset(apdu, 0, sizeof(*apdu));
-	if (card)
-		apdu->cla = (u8) card->cla;
+	apdu->cla = cla;
 	apdu->ins = ins;
 	apdu->p1 = p1;
 	apdu->p2 = p2;
@@ -153,8 +156,6 @@ static void sc_card_free(sc_card_t *card)
 {
 	sc_free_apps(card);
 	sc_free_ef_atr(card);
-
-	sc_file_free(card->ef_dir);
 
 	free(card->ops);
 
@@ -653,6 +654,11 @@ int sc_read_binary(sc_card_t *card, unsigned int idx,
 				LOG_TEST_RET(card->ctx, r, "sc_read_binary() failed");
 			}
 			p += r;
+			if ((bytes_read > INT_MAX - r) || idx > UINT_MAX - r) {
+				/* `bytes_read + r` or `idx + r` would overflow */
+				sc_unlock(card);
+				LOG_FUNC_RETURN(card->ctx, SC_ERROR_OFFSET_TOO_LARGE);
+			}
 			idx += r;
 			bytes_read += r;
 			count -= r;

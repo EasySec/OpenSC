@@ -33,11 +33,6 @@
 #include "cardctl.h"
 #include "log.h"
 
-int sc_pkcs15emu_tcos_init_ex(
-	sc_pkcs15_card_t   *p15card,
-	struct sc_aid *,
-	sc_pkcs15emu_opt_t *opts);
-
 static int insert_cert(
 	sc_pkcs15_card_t *p15card,
 	const char       *path,
@@ -382,8 +377,10 @@ static int detect_idkey(
 	p15card->tokeninfo->label = strdup("IDKey Card");
 
 	insert_cert(p15card, "DF074331", 0x45, 1, "Signatur Zertifikat 1");
-	insert_cert(p15card, "DF074332", 0x45, 1, "Signatur Zertifikat 2");
-	insert_cert(p15card, "DF074333", 0x45, 1, "Signatur Zertifikat 3");
+	insert_cert(p15card, "DF074332", 0x46, 1, "Signatur Zertifikat 2");
+	insert_cert(p15card, "DF074333", 0x47, 1, "Signatur Zertifikat 3");
+	insert_cert(p15card, "DF084331", 0x4B, 1, "Verschluesselungs Zertifikat 1");
+	/* TODO should others come here too? */
 
 	insert_key(p15card, "DF074E03", 0x45, 0x84, 2048, 1, "IDKey1");
 	insert_key(p15card, "DF074E04", 0x46, 0x85, 2048, 1, "IDKey2");
@@ -391,6 +388,7 @@ static int detect_idkey(
 	insert_key(p15card, "DF074E06", 0x48, 0x87, 2048, 1, "IDKey4");
 	insert_key(p15card, "DF074E07", 0x49, 0x88, 2048, 1, "IDKey5");
 	insert_key(p15card, "DF074E08", 0x4A, 0x89, 2048, 1, "IDKey6");
+	insert_key(p15card, "DF084E01", 0x4B, 0x81, 2048, 1, "IDKey7");
 
 	insert_pin(p15card, "5000", 1, 2, 0x00, 6, "PIN",
 		SC_PKCS15_PIN_FLAG_CASE_SENSITIVE | SC_PKCS15_PIN_FLAG_INITIALIZED
@@ -492,18 +490,16 @@ static int detect_unicard(
 
 int sc_pkcs15emu_tcos_init_ex(
 	sc_pkcs15_card_t   *p15card,
-	struct sc_aid *aid,
-	sc_pkcs15emu_opt_t *opts
+	struct sc_aid *aid
 ){
 	sc_card_t         *card = p15card->card;
 	sc_context_t      *ctx = p15card->card->ctx;
 	sc_serial_number_t serialnr;
 	char               serial[30];
-	int i, r;
+	int r;
 
 	/* check if we have the correct card OS unless SC_PKCS15EMU_FLAGS_NO_CHECK */
-	i=(opts && (opts->flags & SC_PKCS15EMU_FLAGS_NO_CHECK));
-	if (!i && card->type!=SC_CARD_TYPE_TCOS_V2 && card->type!=SC_CARD_TYPE_TCOS_V3) return SC_ERROR_WRONG_CARD;
+	if (card->type!=SC_CARD_TYPE_TCOS_V2 && card->type!=SC_CARD_TYPE_TCOS_V3) return SC_ERROR_WRONG_CARD;
 
 	/* get the card serial number */
 	r = sc_card_ctl(card, SC_CARDCTL_GET_SERIALNR, &serialnr);

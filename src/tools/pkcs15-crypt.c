@@ -132,8 +132,12 @@ static char * get_pin(struct sc_pkcs15_object *obj)
 {
 	char buf[(sizeof obj->label) + 20];
 	char *pincode;
-	struct sc_pkcs15_auth_info *pinfo = (struct sc_pkcs15_auth_info *) obj->data;
+	struct sc_pkcs15_auth_info *pinfo;
 
+	if (!obj)
+		return NULL;
+
+	pinfo = (struct sc_pkcs15_auth_info *) obj->data;
 	if (pinfo->auth_type != SC_PKCS15_PIN_AUTH_TYPE_PIN)
 		return NULL;
 
@@ -292,7 +296,7 @@ static int decipher(struct sc_pkcs15_object *obj)
 
 static int get_key(unsigned int usage, sc_pkcs15_object_t **result)
 {
-	sc_pkcs15_object_t *key, *pin;
+	sc_pkcs15_object_t *key, *pin = NULL;
 	const char	*usage_name;
 	sc_pkcs15_id_t	id;
 	int		r;
@@ -346,7 +350,7 @@ static int get_key(unsigned int usage, sc_pkcs15_object_t **result)
 		 * a crypto operation.  Card drivers can test for SC_AC_CONTEXT_SPECIFIC
 		 * to do any special handling. 
 		 */
-		if (key->user_consent) {
+		if (key->user_consent && pin) {
 			int auth_meth_saved;
 			struct sc_pkcs15_auth_info *pinfo = (struct sc_pkcs15_auth_info *) pin->data;
 

@@ -65,6 +65,7 @@ const struct sc_atr_table sc_hsm_atrs[] = {
 	{"3B:FE:18:00:00:81:31:FE:45:80:31:81:54:48:53:4D:31:73:80:21:40:81:07:FA", NULL, NULL, SC_CARD_TYPE_SC_HSM, 0, NULL},
 	{"3B:8E:80:01:80:31:81:54:48:53:4D:31:73:80:21:40:81:07:18", NULL, NULL, SC_CARD_TYPE_SC_HSM, 0, NULL},
 	{"3B:DE:18:FF:81:91:FE:1F:C3:80:31:81:54:48:53:4D:31:73:80:21:40:81:07:1C", NULL, NULL, SC_CARD_TYPE_SC_HSM, 0, NULL},
+	{"3B:DE:96:FF:81:91:FE:1F:C3:80:31:81:54:48:53:4D:31:73:80:21:40:81:07:92", NULL, NULL, SC_CARD_TYPE_SC_HSM, 0, NULL},
 
 	{"3B:80:80:01:01", NULL, NULL, SC_CARD_TYPE_SC_HSM_SOC, 0, NULL},	// SoC Sample Card
 	{
@@ -1001,7 +1002,9 @@ static int sc_hsm_set_security_env(sc_card_t *card,
 		}
 		break;
 	case SC_ALGORITHM_EC:
-		if (env->algorithm_flags & SC_ALGORITHM_ECDSA_HASH_NONE) {
+		if (env->operation == SC_SEC_OPERATION_DERIVE) {
+			priv->algorithm = ALGO_EC_DH;
+		} else if (env->algorithm_flags & SC_ALGORITHM_ECDSA_HASH_NONE) {
 			priv->algorithm = ALGO_EC_RAW;
 		} else if (env->algorithm_flags & SC_ALGORITHM_ECDSA_HASH_SHA1) {
 			priv->algorithm = ALGO_EC_SHA1;
@@ -1010,11 +1013,7 @@ static int sc_hsm_set_security_env(sc_card_t *card,
 		} else if (env->algorithm_flags & SC_ALGORITHM_ECDSA_HASH_SHA256) {
 			priv->algorithm = ALGO_EC_SHA256;
 		} else if (env->algorithm_flags & SC_ALGORITHM_ECDSA_RAW) {
-			if (env->operation == SC_SEC_OPERATION_DERIVE) {
-				priv->algorithm = ALGO_EC_DH;
-			} else {
-				priv->algorithm = ALGO_EC_RAW;
-			}
+			priv->algorithm = ALGO_EC_RAW;
 		} else {
 			LOG_FUNC_RETURN(card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 		}
@@ -1688,8 +1687,19 @@ static int sc_hsm_init(struct sc_card *card)
 	}
 	sc_file_free(file);
 
-	card->max_send_size = 1431;		// 1439 buffer size - 8 byte TLV because of odd ins in UPDATE BINARY
-	if (card->type == SC_CARD_TYPE_SC_HSM_SOC
+	// APDU Buffer limits
+	//   JCOP 2.4.1r3           1462
+	//   JCOP 2.4.2r3           1454
+	//   JCOP 3                 1232
+	//   MicroSD with JCOP 3    478 / 506
+	//   Reiner SCT             1014
+
+	card->max_send_size = 1232 - 17;	// 1232 buffer size - 17 byte header and TLV because of odd ins in UPDATE BINARY
+
+	if (!strncmp("Secure Flash Card", card->reader->name, 17)) {
+		card->max_send_size = 478 - 17;
+		card->max_recv_size = 506 - 2;
+	} else if (card->type == SC_CARD_TYPE_SC_HSM_SOC
 			|| card->type == SC_CARD_TYPE_SC_HSM_GOID) {
 		card->max_recv_size = 0x0630;	// SoC Proxy forces this limit
 	} else {

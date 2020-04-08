@@ -75,7 +75,6 @@ enum {
 	SC_CARD_TYPE_MCRD_BASE = 5000,
 	SC_CARD_TYPE_MCRD_GENERIC,
 	SC_CARD_TYPE_MCRD_ESTEID_V30,
-	SC_CARD_TYPE_MCRD_DTRUST,
 
 	/* setcos driver */
 	SC_CARD_TYPE_SETCOS_BASE = 6000,
@@ -178,6 +177,7 @@ enum {
 	/* MyEID cards */
 	SC_CARD_TYPE_MYEID_BASE = 20000,
 	SC_CARD_TYPE_MYEID_GENERIC,
+	SC_CARD_TYPE_MYEID_OSEID,
 
 	/* GemsafeV1 cards */
 	SC_CARD_TYPE_GEMSAFEV1_BASE = 21000,
@@ -234,6 +234,7 @@ enum {
 	/* JPKI cards */
 	SC_CARD_TYPE_JPKI_BASE = 31000,
 
+	/* Coolkey cards */
 	SC_CARD_TYPE_COOLKEY_BASE = 32000,
 	SC_CARD_TYPE_COOLKEY_GENERIC,
 
@@ -247,6 +248,23 @@ enum {
 	SC_CARD_TYPE_NPA = 34000,
 	SC_CARD_TYPE_NPA_TEST,
 	SC_CARD_TYPE_NPA_ONLINE,
+
+	/* EstEID cards */
+	SC_CARD_TYPE_ESTEID = 35000,
+	SC_CARD_TYPE_ESTEID_2018,
+
+	/* Rutoken cards */
+	SC_CARD_TYPE_RUTOKENS = 36000,
+	SC_CARD_TYPE_RUTOKEN_ECP,
+	SC_CARD_TYPE_RUTOKEN_ECP_SC,
+	SC_CARD_TYPE_RUTOKEN_LITE,
+	SC_CARD_TYPE_RUTOKEN_LITE_SC,
+
+	/* IDPrime cards */
+	SC_CARD_TYPE_IDPRIME_BASE = 37000,
+	SC_CARD_TYPE_IDPRIME_V1,
+	SC_CARD_TYPE_IDPRIME_V2,
+	SC_CARD_TYPE_IDPRIME_GENERIC,
 };
 
 extern sc_card_driver_t *sc_get_default_driver(void);
@@ -289,6 +307,8 @@ extern sc_card_driver_t *sc_get_coolkey_driver(void);
 extern sc_card_driver_t *sc_get_cac_driver(void);
 extern sc_card_driver_t *sc_get_cac1_driver(void);
 extern sc_card_driver_t *sc_get_npa_driver(void);
+extern sc_card_driver_t *sc_get_esteid2018_driver(void);
+extern sc_card_driver_t *sc_get_idprime_driver(void);
 
 #ifdef __cplusplus
 }

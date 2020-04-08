@@ -27,6 +27,7 @@
 
 #include <ctype.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "internal.h"
 #include "asn1.h"
@@ -160,7 +161,7 @@ static int cardos_have_2048bit_package(sc_card_t *card)
 
 static int cardos_init(sc_card_t *card)
 {
-	unsigned long	flags, rsa_2048 = 0;
+	unsigned long flags = 0, rsa_2048 = 0;
 	size_t data_field_length;
 	sc_apdu_t apdu;
 	u8 rbuf[2];
@@ -170,12 +171,15 @@ static int cardos_init(sc_card_t *card)
 	card->cla = 0x00;
 
 	/* Set up algorithm info. */
-	flags = SC_ALGORITHM_RSA_RAW
-		| SC_ALGORITHM_RSA_HASH_NONE
-		| SC_ALGORITHM_ONBOARD_KEY_GEN
-		;
-	if (card->type != SC_CARD_TYPE_CARDOS_V5_0)
-		flags |= SC_ALGORITHM_NEED_USAGE;
+	flags = 0;
+	if (card->type == SC_CARD_TYPE_CARDOS_V5_0) {
+		flags |= SC_ALGORITHM_RSA_PAD_PKCS1;
+	} else {
+		flags |= SC_ALGORITHM_RSA_RAW
+			| SC_ALGORITHM_RSA_HASH_NONE
+			| SC_ALGORITHM_NEED_USAGE
+			| SC_ALGORITHM_ONBOARD_KEY_GEN;
+	}
 
 	if (card->type == SC_CARD_TYPE_CARDOS_M4_2) {
 		r = cardos_have_2048bit_package(card);
@@ -233,6 +237,8 @@ static int cardos_init(sc_card_t *card)
 	if (card->type == SC_CARD_TYPE_CARDOS_V5_0) {
 		/* Starting with CardOS 5, the card supports PIN query commands */
 		card->caps |= SC_CARD_CAP_ISO7816_PIN_INFO;
+		_sc_card_add_rsa_alg(card, 3072, flags, 0);
+		_sc_card_add_rsa_alg(card, 4096, flags, 0);
 	}
 
 	return 0;
@@ -375,8 +381,7 @@ get_next_part:
 		q = sc_asn1_find_tag(card->ctx, p, tlen, 0x8a, &ilen);
 		if (q != NULL && ilen == 1) {
 			offset = (u8)ilen;
-			if (offset != 0)
-				goto get_next_part;
+			goto get_next_part;
 		}
 		len -= tlen + 2;
 		p   += tlen;
@@ -768,7 +773,7 @@ cardos_set_security_env(sc_card_t *card,
 			    int se_num)
 {
 	sc_apdu_t apdu;
-	u8	data[3];
+	u8	data[6];
 	int	key_id, r;
 
 	assert(card != NULL && env != NULL);
@@ -797,10 +802,22 @@ cardos_set_security_env(sc_card_t *card,
 		return SC_ERROR_INVALID_ARGUMENTS;
 	}
 
-	data[0] = 0x83;
-	data[1] = 0x01;
-	data[2] = key_id;
-	apdu.lc = apdu.datalen = 3;
+	if (card->type == SC_CARD_TYPE_CARDOS_V5_0) {
+		/* Private key reference */
+		data[0] = 0x84;
+		data[1] = 0x01;
+		data[2] = key_id;
+		/* Usage qualifier byte */
+		data[3] = 0x95;
+		data[4] = 0x01;
+		data[5] = 0x40;
+		apdu.lc = apdu.datalen = 6;
+	} else {
+		data[0] = 0x83;
+		data[1] = 0x01;
+		data[2] = key_id;
+		apdu.lc = apdu.datalen = 3;
+	}
 	apdu.data = data;
 
 	r = sc_transmit_apdu(card, &apdu);
@@ -870,22 +887,15 @@ cardos_compute_signature(sc_card_t *card, const u8 *data, size_t datalen,
 			 u8 *out, size_t outlen)
 {
 	int    r;
-	u8     buf[SC_MAX_APDU_BUFFER_SIZE];
-	size_t buf_len = sizeof(buf), tmp_len = buf_len;
 	sc_context_t *ctx;
 	int do_rsa_pure_sig = 0;
 	int do_rsa_sig = 0;
+	size_t i;
 
 
 	assert(card != NULL && data != NULL && out != NULL);
 	ctx = card->ctx;
 	SC_FUNC_CALLED(ctx, SC_LOG_DEBUG_VERBOSE);
-
-	if (datalen > SC_MAX_APDU_BUFFER_SIZE)
-		LOG_FUNC_RETURN(ctx, SC_ERROR_INVALID_ARGUMENTS);
-	if (outlen < datalen)
-		LOG_FUNC_RETURN(ctx, SC_ERROR_BUFFER_TOO_SMALL);
-	outlen = datalen;
 
 	/* There are two ways to create a signature, depending on the way,
 	 * the key was created: RSA_SIG and RSA_PURE_SIG.
@@ -902,23 +912,13 @@ cardos_compute_signature(sc_card_t *card, const u8 *data, size_t datalen,
 	 *   and www.crysys.hu/infsec/M40_Manual_E_2001_10.pdf)
 	 */
 
-	if (card->caps & SC_CARD_CAP_ONLY_RAW_HASH_STRIPPED){
-		sc_log(ctx, "Forcing RAW_HASH_STRIPPED");
-		do_rsa_sig = 1;
-	}
-	else if (card->caps & SC_CARD_CAP_ONLY_RAW_HASH){
-		sc_log(ctx, "Forcing RAW_HASH");
-		do_rsa_sig = 1;
-	}
-	else  {
-		/* check the the algorithmIDs from the AlgorithmInfo */
-		size_t i;
-		for(i=0; i<algorithm_ids_in_tokeninfo_count;++i){
-			unsigned int id = algorithm_ids_in_tokeninfo[i];
-			if(id == 0x86 || id == 0x88)
-				do_rsa_sig = 1;
-			else if(id == 0x8C || id == 0x8A)
-				do_rsa_pure_sig = 1;
+	/* check the the algorithmIDs from the AlgorithmInfo */
+	for (i = 0; i < algorithm_ids_in_tokeninfo_count; ++i) {
+		unsigned int id = algorithm_ids_in_tokeninfo[i];
+		if (id == 0x86 || id == 0x88) {
+			do_rsa_sig = 1;
+		} else if (id == 0x8C || id == 0x8A) {
+			do_rsa_pure_sig = 1;
 		}
 	}
 
@@ -939,36 +939,42 @@ cardos_compute_signature(sc_card_t *card, const u8 *data, size_t datalen,
 	}
 
 	if(do_rsa_sig == 1){
+		u8 *buf = malloc(datalen);
+		u8 *stripped_data = buf;
+		size_t stripped_datalen = datalen;
+		if (!buf)
+			LOG_FUNC_RETURN(ctx, SC_ERROR_OUT_OF_MEMORY);
+		memcpy(buf, data, datalen);
+		data = buf;
+
 		sc_log(ctx, "trying RSA_SIG (just the DigestInfo)");
+
 		/* remove padding: first try pkcs1 bt01 padding */
-		r = sc_pkcs1_strip_01_padding(ctx, data, datalen, buf, &tmp_len);
+		r = sc_pkcs1_strip_01_padding(ctx, data, datalen, stripped_data, &stripped_datalen);
 		if (r != SC_SUCCESS) {
-			const u8 *p = data;
 			/* no pkcs1 bt01 padding => let's try zero padding
 			 * This can only work if the data tbs doesn't have a
 			 * leading 0 byte.  */
-			tmp_len = buf_len;
-			while (*p == 0 && tmp_len != 0) {
-				++p;
-				--tmp_len;
+			while (*stripped_data == 0 && stripped_datalen != 0) {
+				++stripped_data;
+				--stripped_datalen;
 			}
-			memcpy(buf, p, tmp_len);
 		}
-		if (!(card->caps & (SC_CARD_CAP_ONLY_RAW_HASH_STRIPPED | SC_CARD_CAP_ONLY_RAW_HASH)) || card->caps & SC_CARD_CAP_ONLY_RAW_HASH ) {
-			sc_log(ctx, "trying to sign raw hash value with prefix");
-			r = do_compute_signature(card, buf, tmp_len, out, outlen);
-			if (r >= SC_SUCCESS)
-				LOG_FUNC_RETURN(ctx, r);
-		}
-		if (card->caps & SC_CARD_CAP_ONLY_RAW_HASH) {
-			sc_log(ctx, "Failed to sign raw hash value with prefix when forcing");
-			LOG_FUNC_RETURN(ctx, SC_ERROR_INVALID_ARGUMENTS);
+		sc_log(ctx, "trying to sign raw hash value with prefix");
+		r = do_compute_signature(card, stripped_data, stripped_datalen, out, outlen);
+		if (r >= SC_SUCCESS) {
+			free(buf);
+			LOG_FUNC_RETURN(ctx, r);
 		}
 		sc_log(ctx, "trying to sign stripped raw hash value (card is responsible for prefix)");
-		r = sc_pkcs1_strip_digest_info_prefix(NULL,buf,tmp_len,buf,&buf_len);
-		if (r != SC_SUCCESS)
+		r = sc_pkcs1_strip_digest_info_prefix(NULL, stripped_data, stripped_datalen, stripped_data, &stripped_datalen);
+		if (r != SC_SUCCESS) {
+			free(buf);
 			LOG_FUNC_RETURN(ctx, r);
-		return do_compute_signature(card, buf, buf_len, out, outlen);
+		}
+		r = do_compute_signature(card, stripped_data, stripped_datalen, out, outlen);
+		free(buf);
+		LOG_FUNC_RETURN(ctx, r);
 	}
 
 	LOG_FUNC_RETURN(ctx, SC_ERROR_INTERNAL);
@@ -1182,14 +1188,19 @@ static int cardos_get_serialnr(sc_card_t *card, sc_serial_number_t *serial)
 	LOG_TEST_RET(card->ctx, r,  "APDU transmit failed");
 	if (apdu.sw1 != 0x90 || apdu.sw2 != 0x00)
 		return SC_ERROR_INTERNAL;
-	if (apdu.resplen != 32) {
+	if ((apdu.resplen == 8) && (card->type == SC_CARD_TYPE_CARDOS_V5_0)) {
+		/* cache serial number */
+		memcpy(card->serialnr.value, rbuf, 8);
+		card->serialnr.len = 8;
+	} else if (apdu.resplen == 32) {
+		/* cache serial number */
+		memcpy(card->serialnr.value, &rbuf[10], 6);
+		card->serialnr.len = 6;
+	} else {
 		sc_log(card->ctx,  "unexpected response to GET DATA serial"
 				" number\n");
 		return SC_ERROR_INTERNAL;
 	}
-	/* cache serial number */
-	memcpy(card->serialnr.value, &rbuf[10], 6);
-	card->serialnr.len = 6;
 	/* copy and return serial number */
 	memcpy(serial, &card->serialnr, sizeof(*serial));
 	return SC_SUCCESS;

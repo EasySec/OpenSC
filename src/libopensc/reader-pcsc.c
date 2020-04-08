@@ -78,6 +78,25 @@
 #define PCSC_TRACE(reader, desc, rv) do { sc_log(reader->ctx, "%s:" desc ": 0x%08lx\n", reader->name, (unsigned long)((ULONG)rv)); } while (0)
 #define PCSC_LOG(ctx, desc, rv) do { sc_log(ctx, desc ": 0x%08lx\n", (unsigned long)((ULONG)rv)); } while (0)
 
+/* #define APDU_LOG_FILE "apdulog" */
+#ifdef APDU_LOG_FILE
+void APDU_LOG(u8 *rbuf, uint16_t rsize)
+{
+	static FILE *fd = NULL;
+	u8 *lenb = (u8*)&rsize;
+
+	if (fd == NULL) {
+		fd = fopen(APDU_LOG_FILE, "w");
+	}
+	/* First two bytes denote the length */
+	(void) fwrite(lenb, 2, 1, fd);
+	(void) fwrite(rbuf, rsize, 1, fd);
+	fflush(fd);
+}
+#else
+#define APDU_LOG(rbuf, rsize)
+#endif
+
 struct pcsc_global_private_data {
 	int cardmod;
 	SCARDCONTEXT pcsc_ctx;
@@ -108,6 +127,9 @@ struct pcsc_global_private_data {
 	SCardTransmit_t SCardTransmit;
 	SCardListReaders_t SCardListReaders;
 	SCardGetAttrib_t SCardGetAttrib;
+
+	sc_reader_t *attached_reader;
+	sc_reader_t *removed_reader;
 };
 
 struct pcsc_private_data {
@@ -132,6 +154,8 @@ struct pcsc_private_data {
 };
 
 static int pcsc_detect_card_presence(sc_reader_t *reader);
+static int pcsc_reconnect(sc_reader_t * reader, DWORD action);
+static int pcsc_connect(sc_reader_t *reader);
 
 static DWORD pcsc_reset_action(const char *str)
 {
@@ -160,7 +184,11 @@ static int pcsc_to_opensc_error(LONG rv)
 		return SC_ERROR_READER_LOCKED;
 	case SCARD_E_NO_READERS_AVAILABLE:
 		return SC_ERROR_NO_READERS_FOUND;
+	case SCARD_E_UNKNOWN_READER:
+		return SC_ERROR_READER_DETACHED;
+
 	case SCARD_E_NO_SERVICE:
+	case SCARD_E_SERVICE_STOPPED:
 		/* If the service is (auto)started, there could be readers later */
 		return SC_ERROR_NO_READERS_FOUND;
 	case SCARD_E_NO_SMARTCARD:
@@ -244,6 +272,16 @@ static int pcsc_internal_transmit(sc_reader_t *reader,
 		switch (rv) {
 		case SCARD_W_REMOVED_CARD:
 			return SC_ERROR_CARD_REMOVED;
+		case SCARD_E_INVALID_HANDLE:
+		case SCARD_E_INVALID_VALUE:
+		case SCARD_E_READER_UNAVAILABLE:
+			pcsc_connect(reader);
+			/* return failure so that upper layers will be notified */
+			return SC_ERROR_READER_REATTACHED;
+		case SCARD_W_RESET_CARD:
+			pcsc_reconnect(reader, SCARD_LEAVE_CARD);
+			/* return failure so that upper layers will be notified */
+			return SC_ERROR_CARD_RESET;
 		default:
 			/* Translate strange errors from card removal to a proper return code */
 			pcsc_detect_card_presence(reader);
@@ -293,6 +331,7 @@ static int pcsc_transmit(sc_reader_t *reader, sc_apdu_t *apdu)
 		goto out;
 	}
 	sc_apdu_log(reader->ctx, rbuf, rsize, 0);
+	APDU_LOG(rbuf, (uint16_t)rsize);
 	/* set response */
 	r = sc_apdu_set_resp(reader->ctx, apdu, rbuf, rsize);
 
@@ -323,7 +362,7 @@ static int refresh_attributes(sc_reader_t *reader)
 	if (reader->ctx->flags & SC_CTX_FLAG_TERMINATE)
 		return SC_ERROR_NOT_ALLOWED;
 
-	if (priv->reader_state.szReader == NULL) {
+	if (priv->reader_state.szReader == NULL || reader->ctx->flags & SC_READER_REMOVED) {
 		priv->reader_state.szReader = reader->name;
 		priv->reader_state.dwCurrentState = SCARD_STATE_UNAWARE;
 		priv->reader_state.dwEventState = SCARD_STATE_UNAWARE;
@@ -338,16 +377,20 @@ static int refresh_attributes(sc_reader_t *reader)
 			/* Timeout, no change from previous recorded state. Make sure that
 			 * changed flag is not set. */
 			reader->flags &= ~SC_READER_CARD_CHANGED;
+			/* Make sure to preserve the CARD_PRESENT flag if the reader was
+			 * reattached and we called the refresh_attributes too recently */
+			if (priv->reader_state.dwEventState & SCARD_STATE_PRESENT) {
+				reader->flags |= SC_READER_CARD_PRESENT;
+			}
 			LOG_FUNC_RETURN(reader->ctx, SC_SUCCESS);
 		}
 		
 		/* the system could not detect the reader. It means, the prevoiusly attached reader is disconnected. */
-		if (
+		if (rv == (LONG)SCARD_E_UNKNOWN_READER
 #ifdef SCARD_E_NO_READERS_AVAILABLE
-			(rv == (LONG)SCARD_E_NO_READERS_AVAILABLE) ||
+				|| rv == (LONG)SCARD_E_NO_READERS_AVAILABLE
 #endif
-			(rv == (LONG)SCARD_E_UNKNOWN_READER) || (rv == (LONG)SCARD_E_SERVICE_STOPPED)) {
-
+				|| rv == (LONG)SCARD_E_SERVICE_STOPPED) {
  			if (old_flags & SC_READER_CARD_PRESENT) {
  				reader->flags |= SC_READER_CARD_CHANGED;
  			}
@@ -385,6 +428,7 @@ static int refresh_attributes(sc_reader_t *reader)
 		if (memcmp(priv->reader_state.rgbAtr, reader->atr.value, priv->reader_state.cbAtr) != 0) {
 			reader->atr.len = priv->reader_state.cbAtr;
 			memcpy(reader->atr.value, priv->reader_state.rgbAtr, reader->atr.len);
+			APDU_LOG(reader->atr.value, (uint16_t) reader->atr.len);
 		}
 
 		/* Is the reader in use by some other application ? */
@@ -404,7 +448,7 @@ static int refresh_attributes(sc_reader_t *reader)
 				unsigned char atr[SC_MAX_ATR_SIZE];
 				rv = priv->gpriv->SCardStatus(priv->pcsc_card, NULL,
 						&readers_len, &cstate, &prot, atr, &atr_len);
-				if (rv == (LONG)SCARD_W_REMOVED_CARD)
+				if (rv == (LONG)SCARD_W_REMOVED_CARD || rv == (LONG)SCARD_E_INVALID_VALUE)
 					reader->flags |= SC_READER_CARD_CHANGED;
 			}
 		} else {
@@ -649,6 +693,8 @@ static int pcsc_lock(sc_reader_t *reader)
 		PCSC_TRACE(reader, "SCardBeginTransaction returned", rv);
 
 	switch (rv) {
+		case SCARD_E_INVALID_VALUE:
+			/* This is retuned in case of the same reader was re-attached */
 		case SCARD_E_INVALID_HANDLE:
 		case SCARD_E_READER_UNAVAILABLE:
 			r = pcsc_connect(reader);
@@ -1100,7 +1146,7 @@ static void detect_reader_features(sc_reader_t *reader, SCARDHANDLE card_handle)
 		return;
 
 	rv = gpriv->SCardControl(card_handle, CM_IOCTL_GET_FEATURE_REQUEST, NULL, 0, feature_buf, sizeof(feature_buf), &feature_len);
-	if (rv != (LONG)SCARD_S_SUCCESS) {
+	if (rv != SCARD_S_SUCCESS) {
 		PCSC_TRACE(reader, "SCardControl failed", rv);
 		return;
 	}
@@ -1339,6 +1385,8 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 	}
 
 	sc_log(ctx, "Probing PC/SC readers");
+	gpriv->attached_reader = NULL;
+	gpriv->removed_reader = NULL;
 
 	do {
 		if (gpriv->pcsc_ctx == (SCARDCONTEXT)-1) {
@@ -1356,12 +1404,11 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 			 * All readers have disappeared, so mark them as
 			 * such so we don't keep polling them over and over.
 			 */
-			if (
+			if (rv == (LONG)SCARD_E_NO_SERVICE
 #ifdef SCARD_E_NO_READERS_AVAILABLE
-				(rv == (LONG)SCARD_E_NO_READERS_AVAILABLE) ||
+					|| rv == (LONG)SCARD_E_NO_READERS_AVAILABLE
 #endif
-				(rv == (LONG)SCARD_E_NO_SERVICE) || (rv == (LONG)SCARD_E_SERVICE_STOPPED)) {
-
+					|| rv == (LONG)SCARD_E_SERVICE_STOPPED) {
 				for (i = 0; i < sc_ctx_get_reader_count(ctx); i++) {
 					sc_reader_t *reader = sc_ctx_get_reader(ctx, i);
 
@@ -1371,6 +1418,7 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 					}
 
 					reader->flags |= SC_READER_REMOVED;
+					gpriv->removed_reader = reader;
 				}
 			}
 
@@ -1427,8 +1475,14 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 
 		for (reader_name = reader_buf; *reader_name != '\x0';
 				reader_name += strlen(reader_name) + 1) {
-			if (!strcmp(reader->name, reader_name))
+			if (!strcmp(reader->name, reader_name)) {
+				if (reader->flags & SC_READER_REMOVED) {
+					reader->flags &= ~SC_READER_REMOVED;
+					gpriv->attached_reader = reader;
+					refresh_attributes(reader);
+				}
 				break;
+			}
 		}
 
 		if (*reader_name != '\x0') {
@@ -1439,8 +1493,11 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 					(reader_buf + reader_buf_size) - next_reader_name);
 			reader_buf_size -= (next_reader_name - reader_name);
 		} else {
-			/* existing reader not found */
-			reader->flags |= SC_READER_REMOVED;
+			if (!(reader->flags & SC_READER_REMOVED)) {
+				/* existing reader not found */
+				reader->flags |= SC_READER_REMOVED;
+				gpriv->removed_reader = reader;
+			}
 		}
 	}
 
@@ -1455,6 +1512,7 @@ static int pcsc_detect_readers(sc_context_t *ctx)
 			_sc_delete_reader(ctx, reader);
 			continue;
 		}
+		gpriv->attached_reader = reader;
 
 		/* check for pinpad support early, to allow opensc-tool -l display accurate information */
 		priv = reader->drv_data;
@@ -1506,8 +1564,8 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 	LONG rv;
 	SCARD_READERSTATE *rgReaderStates;
 	size_t i;
-	unsigned int num_watch;
-	int r = SC_ERROR_INTERNAL;
+	unsigned int num_watch, count;
+	int r = SC_ERROR_INTERNAL, detect_readers = 0, detected_hotplug = 0;
 	DWORD dwtimeout;
 
 	LOG_FUNC_CALLED(ctx);
@@ -1525,22 +1583,41 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 			LOG_FUNC_RETURN(ctx, SC_ERROR_OUT_OF_MEMORY);
 
 		/* Find out the current status */
-		num_watch = sc_ctx_get_reader_count(ctx);
-		sc_log(ctx, "Trying to watch %d readers", num_watch);
-		for (i = 0; i < num_watch; i++) {
-			rgReaderStates[i].szReader = sc_ctx_get_reader(ctx, i)->name;
-			rgReaderStates[i].dwCurrentState = SCARD_STATE_UNAWARE;
-			rgReaderStates[i].dwEventState = SCARD_STATE_UNAWARE;
-		}
-#ifndef __APPLE__
-	   	/* OS X 10.6.2 - 10.12.6 do not support PnP notification */
-		if (event_mask & SC_EVENT_READER_ATTACHED) {
-			rgReaderStates[i].szReader = "\\\\?PnP?\\Notification";
-			rgReaderStates[i].dwCurrentState = SCARD_STATE_UNAWARE;
-			rgReaderStates[i].dwEventState = SCARD_STATE_UNAWARE;
+		num_watch = 0;
+		count = sc_ctx_get_reader_count(ctx);
+		for (i = 0; i < count; i++) {
+			sc_reader_t *reader = sc_ctx_get_reader(ctx, i);
+			if (reader->flags & SC_READER_REMOVED)
+				continue;
+			struct pcsc_private_data *priv = reader->drv_data;
+			rgReaderStates[num_watch].szReader = reader->name;
+			if (priv->reader_state.szReader == NULL) {
+				rgReaderStates[num_watch].dwCurrentState = SCARD_STATE_UNAWARE;
+			} else {
+				rgReaderStates[num_watch].dwCurrentState = priv->reader_state.dwEventState;
+			}
+			rgReaderStates[num_watch].dwEventState = SCARD_STATE_UNAWARE;
 			num_watch++;
 		}
+		sc_log(ctx, "Trying to watch %d reader%s", num_watch, num_watch == 1 ? "" : "s");
+		if (event_mask & SC_EVENT_READER_ATTACHED) {
+#ifdef __APPLE__
+			/* OS X 10.6.2 - 10.12.6 do not support PnP notification */
+			sc_log(ctx, "PnP notification not supported");
+			/* Always check on new readers as if a hotplug
+			 * event was detected. This overwrites a
+			 * SC_ERROR_EVENT_TIMEOUT if a new reader is
+			 * detected with SC_SUCCESS. */
+			detect_readers = 1;
+			detected_hotplug = 1;
+#else
+			rgReaderStates[num_watch].szReader = "\\\\?PnP?\\Notification";
+			rgReaderStates[num_watch].dwCurrentState = SCARD_STATE_UNAWARE;
+			rgReaderStates[num_watch].dwEventState = SCARD_STATE_UNAWARE;
+			num_watch++;
+			sc_log(ctx, "Trying to detect new readers");
 #endif
+		}
 	}
 	else {
 		rgReaderStates = (SCARD_READERSTATE *)(*reader_states);
@@ -1566,14 +1643,14 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 		goto out;
 	}
 
-#ifdef __APPLE__
+	*event_reader = NULL;
+	*event = 0;
+
 	if (num_watch == 0) {
-		sc_log(ctx, "No readers available, PnP notification not supported");
-		*event_reader = NULL;
+		sc_log(ctx, "No readers available to be watched");
 		r = SC_ERROR_NO_READERS_FOUND;
 		goto out;
 	}
-#endif
 
 	rv = gpriv->SCardGetStatusChange(gpriv->pcsc_wait_ctx, 0, rgReaderStates, num_watch);
 	if (rv != SCARD_S_SUCCESS) {
@@ -1592,7 +1669,6 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 
 		/* Scan the current state of all readers to see if they
 		 * match any of the events we're polling for */
-		*event = 0;
 		for (i = 0, rsp = rgReaderStates; i < num_watch; i++, rsp++) {
 			DWORD state, prev_state;
 			sc_log(ctx, "'%s' before=0x%08X now=0x%08X",
@@ -1603,51 +1679,72 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 			state = rsp->dwEventState;
 			rsp->dwCurrentState = rsp->dwEventState;
 			if (state & SCARD_STATE_CHANGED) {
-
 				/* check for hotplug events  */
-				if (!strcmp(rgReaderStates[i].szReader, "\\\\?PnP?\\Notification")) {
+				if (!strcmp(rsp->szReader, "\\\\?PnP?\\Notification")) {
 					sc_log(ctx, "detected hotplug event");
-					*event |= SC_EVENT_READER_ATTACHED;
-					*event_reader = NULL;
-				}
+					/* Windows sends hotplug event on both, attaching and
+					 * detaching a reader. pcscd only sends it in case of
+					 * attaching a reader. We'll detect later in which case we
+					 * are. */
+					detect_readers = 1;
+					detected_hotplug = 1;
 
-				if ((state & SCARD_STATE_PRESENT) && !(prev_state & SCARD_STATE_PRESENT)) {
-					sc_log(ctx, "card inserted event");
-					*event |= SC_EVENT_CARD_INSERTED;
-				}
+					/* Windows wants us to manually reset the changed state */
+					rsp->dwEventState &= ~SCARD_STATE_CHANGED;
 
-				if ((prev_state & SCARD_STATE_PRESENT) && !(state & SCARD_STATE_PRESENT)) {
-					sc_log(ctx, "card removed event");
-					*event |= SC_EVENT_CARD_REMOVED;
-				}
+					/* By default, ignore a hotplug event as if a timout
+					 * occurred, since it may be an unrequested removal or
+					 * false alarm. Just continue to loop and check at the end
+					 * of this function whether we need to return the attached
+					 * reader or not. */
+					r = SC_ERROR_EVENT_TIMEOUT;
+				} else {
+					sc_reader_t *reader = sc_ctx_get_reader_by_name(ctx, rsp->szReader);
+					if (reader) {
+						/* copy the state so we know what to watch out for */
+						struct pcsc_private_data *priv = reader->drv_data;
+						priv->reader_state.dwEventState = state;
+						priv->reader_state.dwCurrentState = prev_state;
+					}
 
-				if ((state & SCARD_STATE_UNKNOWN) && !(prev_state & SCARD_STATE_UNKNOWN)) {
-					sc_log(ctx, "reader detached event");
-					*event |= SC_EVENT_READER_DETACHED;
-				}
+					if ((state & SCARD_STATE_PRESENT) && !(prev_state & SCARD_STATE_PRESENT)) {
+						sc_log(ctx, "card inserted event");
+						*event |= SC_EVENT_CARD_INSERTED;
+					}
 
-				if ((prev_state & SCARD_STATE_UNKNOWN) && !(state & SCARD_STATE_UNKNOWN)) {
-					sc_log(ctx, "reader re-attached event");
-					*event |= SC_EVENT_READER_ATTACHED;
-				}
+					if ((prev_state & SCARD_STATE_PRESENT) && !(state & SCARD_STATE_PRESENT)) {
+						sc_log(ctx, "card removed event");
+						*event |= SC_EVENT_CARD_REMOVED;
+					}
 
-				if (*event & event_mask) {
-					sc_log(ctx, "Matching event 0x%02X in reader %s", *event, rsp->szReader);
-					*event_reader = sc_ctx_get_reader_by_name(ctx, rsp->szReader);
-					r = SC_SUCCESS;
-					goto out;
-				}
+					if ((state & SCARD_STATE_UNKNOWN) && !(prev_state & SCARD_STATE_UNKNOWN)) {
+						sc_log(ctx, "reader detached event");
+						*event |= SC_EVENT_READER_DETACHED;
+						detect_readers = 1;
+					}
 
+					if ((state & SCARD_STATE_IGNORE) && !(prev_state & SCARD_STATE_IGNORE)) {
+						sc_log(ctx, "reader detached event");
+						*event |= SC_EVENT_READER_DETACHED;
+						detect_readers = 1;
+					}
+
+					if ((prev_state & SCARD_STATE_UNKNOWN) && !(state & SCARD_STATE_UNKNOWN)) {
+						sc_log(ctx, "reader re-attached event");
+						*event |= SC_EVENT_READER_ATTACHED;
+						detect_readers = 1;
+					}
+
+					if (*event & event_mask) {
+						sc_log(ctx, "Matching event 0x%02X in reader %s", *event, rsp->szReader);
+						*event_reader = reader;
+						r = SC_SUCCESS;
+						goto out;
+					} else {
+						*event = 0;
+					}
+				}
 			}
-
-			/* No match - copy the state so pcscd knows
-			 * what to watch out for */
-			/* rsp->dwCurrentState = rsp->dwEventState; */
-		}
-
-		if (timeout == 0) {
-			r = SC_ERROR_EVENT_TIMEOUT;
-			goto out;
 		}
 
 		/* Set the timeout if caller wants to time out */
@@ -1659,13 +1756,13 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 
 		rv = gpriv->SCardGetStatusChange(gpriv->pcsc_wait_ctx, dwtimeout, rgReaderStates, num_watch);
 
-		if (rv == (LONG) SCARD_E_CANCELLED) {
+		if (rv == (LONG)SCARD_E_CANCELLED) {
 			/* C_Finalize was called, events don't matter */
 			r = SC_ERROR_EVENT_TIMEOUT;
 			goto out;
 		}
 
-		if (rv == (LONG) SCARD_E_TIMEOUT) {
+		if (rv == (LONG)SCARD_E_TIMEOUT) {
 			r = SC_ERROR_EVENT_TIMEOUT;
 			goto out;
 		}
@@ -1677,12 +1774,54 @@ static int pcsc_wait_for_event(sc_context_t *ctx, unsigned int event_mask, sc_re
 		}
 	}
 out:
-	if (!reader_states)   {
-		free(rgReaderStates);
+	/* in case of an error re-detect all readers */
+	if (r < 0 && r != SC_ERROR_EVENT_TIMEOUT)
+		detect_readers = 1;
+
+	if (detect_readers) {
+		pcsc_detect_readers(ctx);
 	}
-	else if (*reader_states == NULL)   {
-		sc_log(ctx, "return allocated 'reader states'");
-		*reader_states = rgReaderStates;
+
+	if (detected_hotplug) {
+		if (gpriv->attached_reader) {
+			if (event_reader && event && !*event) {
+				/* no other event has been detected, yet */
+				*event_reader = gpriv->attached_reader;
+				*event = SC_EVENT_READER_ATTACHED;
+				r = SC_SUCCESS;
+			}
+			gpriv->attached_reader = NULL;
+		} else if (gpriv->removed_reader) {
+			/* Normally, we only check the hotplug event for attached readers.
+			 * However, Windows also notifies on removal. Check, if the latter
+			 * was requested by the caller. */
+			if (event_mask & SC_EVENT_READER_DETACHED
+					&& event_reader && event && !*event) {
+				/* no other event has been detected, yet */
+				*event_reader = gpriv->removed_reader;
+				*event = SC_EVENT_READER_DETACHED;
+				r = SC_SUCCESS;
+			}
+			gpriv->removed_reader = NULL;
+		} else {
+			/* false alarm, there was no reader attached or removed,
+			 * avoid re-initialize the reader states by resetting detect_readers */
+			detect_readers = 0;
+		}
+	}
+
+	if (detect_readers) {
+		free(rgReaderStates);
+		if (reader_states && *reader_states)
+			*reader_states = NULL;
+	} else {
+		if (!reader_states) {
+			free(rgReaderStates);
+		}
+		else if (*reader_states == NULL) {
+			sc_log(ctx, "return allocated reader states");
+			*reader_states = rgReaderStates;
+		}
 	}
 
 	LOG_FUNC_RETURN(ctx, r);
@@ -2371,14 +2510,31 @@ int pcsc_use_reader(sc_context_t *ctx, void * pcsc_context_handle, void * pcsc_c
 		goto out;
 	}
 
-	/* if we already had a reader, delete it */
+	if (!gpriv->cardmod) {
+		ret = SC_ERROR_INTERNAL;
+		goto out;
+	}
+
+	/* Only minidriver calls this and only uses one reader */
+	/* if we already have a reader, update it */
 	if (sc_ctx_get_reader_count(ctx) > 0) {
-		sc_reader_t *oldrdr = list_extract_at(&ctx->readers, 0);
-		if (oldrdr)
-			_sc_delete_reader(ctx, oldrdr);
+		sc_log(ctx, "Reusing the reader");
+		sc_reader_t *reader = list_get_at(&ctx->readers, 0);
+
+		if (reader) {
+			struct pcsc_private_data *priv = reader->drv_data;
+			priv->pcsc_card =*(SCARDHANDLE *)pcsc_card_handle;
+			gpriv->pcsc_ctx = *(SCARDCONTEXT *)pcsc_context_handle;
+			ret = SC_SUCCESS;
+			goto out;
+		} else {
+			ret = SC_ERROR_INTERNAL;
+			goto out;
+		}
 	}
 
 	sc_log(ctx, "Probing PC/SC reader");
+	gpriv->attached_reader = NULL;
 
 	gpriv->pcsc_ctx = *(SCARDCONTEXT *)pcsc_context_handle;
 	card_handle =  *(SCARDHANDLE *)pcsc_card_handle;
@@ -2397,6 +2553,7 @@ int pcsc_use_reader(sc_context_t *ctx, void * pcsc_context_handle, void * pcsc_c
 		} else {
 			_sc_delete_reader(ctx, reader);
 		}
+		gpriv->attached_reader = reader;
 	}
 
 out:

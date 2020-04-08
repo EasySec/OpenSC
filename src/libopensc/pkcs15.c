@@ -215,14 +215,7 @@ int sc_pkcs15_parse_tokeninfo(sc_context_t *ctx,
 		ti->serial_number = malloc(serial_len * 2 + 1);
 		if (ti->serial_number == NULL)
 			return SC_ERROR_OUT_OF_MEMORY;
-
-		ti->serial_number[0] = 0;
-		for (ii = 0; ii < serial_len; ii++) {
-			char byte[3];
-
-			sprintf(byte, "%02X", serial[ii]);
-			strcat(ti->serial_number, byte);
-		}
+		sc_bin_to_hex(serial, serial_len, ti->serial_number, serial_len * 2 + 1, 0);
 		sc_log(ctx, "TokenInfo.serialNunmber '%s'", ti->serial_number);
 	}
 
@@ -479,6 +472,8 @@ parse_ddo(struct sc_pkcs15_card *p15card, const u8 * buf, size_t buflen)
 		p15card->file_odf->path = odf_path;
 	}
 	if (asn1_ddo[2].flags & SC_ASN1_PRESENT) {
+		if (p15card->file_tokeninfo)
+			sc_file_free(p15card->file_tokeninfo);
 		p15card->file_tokeninfo = sc_file_new();
 		if (p15card->file_tokeninfo == NULL)
 			goto mem_err;
@@ -612,12 +607,14 @@ parse_odf(const unsigned char * buf, size_t buflen, struct sc_pkcs15_card *p15ca
 		if (r < 0)
 			return r;
 		type = r;
-		r = sc_pkcs15_make_absolute_path(&p15card->file_app->path, &path);
-		if (r < 0)
-			return r;
-		r = sc_pkcs15_add_df(p15card, odf_indexes[type], &path);
-		if (r)
-			return r;
+		if (p15card->file_app) {
+			r = sc_pkcs15_make_absolute_path(&p15card->file_app->path, &path);
+			if (r < 0)
+				return r;
+			r = sc_pkcs15_add_df(p15card, odf_indexes[type], &path);
+			if (r)
+				return r;
+		}
 	}
 	return 0;
 }
@@ -969,6 +966,7 @@ sc_pkcs15_bind_internal(struct sc_pkcs15_card *p15card, struct sc_aid *aid)
 		if (err != SC_SUCCESS)
 			sc_log(ctx, "unable to enumerate apps: %s", sc_strerror(err));
 	}
+	sc_file_free(p15card->file_app);
 	p15card->file_app = sc_file_new();
 	if (p15card->file_app == NULL) {
 		err = SC_ERROR_OUT_OF_MEMORY;
@@ -1044,6 +1042,10 @@ sc_pkcs15_bind_internal(struct sc_pkcs15_card *p15card, struct sc_aid *aid)
 		sc_log(ctx, "EF(ODF) is empty");
 		goto end;
 	}
+	if (len > MAX_FILE_SIZE) {
+		sc_log(ctx, "EF(ODF) too large");
+		goto end;
+	}
 	buf = malloc(len);
 	if(buf == NULL)
 		LOG_FUNC_RETURN(ctx, SC_ERROR_OUT_OF_MEMORY);
@@ -1110,6 +1112,10 @@ sc_pkcs15_bind_internal(struct sc_pkcs15_card *p15card, struct sc_aid *aid)
 	len = p15card->file_tokeninfo->size;
 	if (!len) {
 		sc_log(ctx, "EF(TokenInfo) is empty");
+		goto end;
+	}
+	if (len > MAX_FILE_SIZE) {
+		sc_log(ctx, "EF(TokenInfo) too large");
 		goto end;
 	}
 	buf = malloc(len);
@@ -1189,17 +1195,19 @@ sc_pkcs15_bind(struct sc_card *card, struct sc_aid *aid,
 		struct sc_pkcs15_card **p15card_out)
 {
 	struct sc_pkcs15_card *p15card = NULL;
-	struct sc_context *ctx = card->ctx;
+	struct sc_context *ctx;
 	scconf_block *conf_block = NULL;
 	int r, emu_first, enable_emu;
 	const char *private_certificate;
 
+	if (card == NULL || p15card_out == NULL) {
+		return SC_ERROR_INVALID_ARGUMENTS;
+	}
+	ctx = card->ctx;
+
 	LOG_FUNC_CALLED(ctx);
 	sc_log(ctx, "application(aid:'%s')", aid ? sc_dump_hex(aid->value, aid->len) : "empty");
 
-	if (p15card_out == NULL) {
-		return SC_ERROR_INVALID_ARGUMENTS;
-	}
 	p15card = sc_pkcs15_card_new();
 	if (p15card == NULL)
 		LOG_FUNC_RETURN(ctx, SC_ERROR_OUT_OF_MEMORY);
@@ -1312,12 +1320,13 @@ __sc_pkcs15_search_objects(struct sc_pkcs15_card *p15card, unsigned int class_ma
 
 	/* Make sure the class mask we have makes sense */
 	if (class_mask == 0
-	 || (class_mask & ~(SC_PKCS15_SEARCH_CLASS_PRKEY |
-			    SC_PKCS15_SEARCH_CLASS_PUBKEY |
-			    SC_PKCS15_SEARCH_CLASS_SKEY |
-			    SC_PKCS15_SEARCH_CLASS_CERT |
-			    SC_PKCS15_SEARCH_CLASS_DATA |
-			    SC_PKCS15_SEARCH_CLASS_AUTH))) {
+			|| (class_mask & ~(
+					SC_PKCS15_SEARCH_CLASS_PRKEY |
+					SC_PKCS15_SEARCH_CLASS_PUBKEY |
+					SC_PKCS15_SEARCH_CLASS_SKEY |
+					SC_PKCS15_SEARCH_CLASS_CERT |
+					SC_PKCS15_SEARCH_CLASS_DATA |
+					SC_PKCS15_SEARCH_CLASS_AUTH))) {
 		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 	}
 
@@ -2259,7 +2268,7 @@ sc_pkcs15_parse_unusedspace(const unsigned char *buf, size_t buflen, struct sc_p
 	const unsigned char *p = buf;
 	size_t left = buflen;
 	int r;
-	struct sc_path path, dummy_path;
+	struct sc_path path;
 	struct sc_pkcs15_id auth_id;
 	struct sc_asn1_entry asn1_unusedspace[] = {
 		{ "UnusedSpace", SC_ASN1_STRUCT, SC_ASN1_TAG_SEQUENCE | SC_ASN1_CONS, 0, NULL, NULL },
@@ -2273,9 +2282,6 @@ sc_pkcs15_parse_unusedspace(const unsigned char *buf, size_t buflen, struct sc_p
 
 	/* Clean the list if already present */
 	sc_pkcs15_free_unusedspace(p15card);
-
-	sc_format_path("3F00", &dummy_path);
-	dummy_path.index = dummy_path.count = 0;
 
 	sc_format_asn1_entry(asn1_unusedspace, asn1_unusedspace_values, NULL, 1);
 	sc_format_asn1_entry(asn1_unusedspace_values, &path, NULL, 1);
@@ -2291,7 +2297,7 @@ sc_pkcs15_parse_unusedspace(const unsigned char *buf, size_t buflen, struct sc_p
 		/* If the path length is 0, it's a dummy path then don't add it.
 		 * If the path length isn't included (-1) then it's against the standard
 		 *   but we'll just ignore it instead of returning an error. */
-		if (path.count > 0) {
+		if (path.count > 0 && p15card->file_app) {
 			r = sc_pkcs15_make_absolute_path(&p15card->file_app->path, &path);
 			if (r < 0)
 				return r;

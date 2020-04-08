@@ -43,21 +43,24 @@ struct sc_pkcs15_emulator_handler builtin_emulators[] = {
 	{ "itacns",	sc_pkcs15emu_itacns_init_ex	},
 	{ "PIV-II",     sc_pkcs15emu_piv_init_ex	},
 	{ "cac",        sc_pkcs15emu_cac_init_ex	},
+	{ "idprime",    sc_pkcs15emu_idprime_init_ex	},
 	{ "gemsafeGPK",	sc_pkcs15emu_gemsafeGPK_init_ex	},
 	{ "gemsafeV1",	sc_pkcs15emu_gemsafeV1_init_ex	},
 	{ "actalis",	sc_pkcs15emu_actalis_init_ex	},
 	{ "atrust-acos",sc_pkcs15emu_atrust_acos_init_ex},
 	{ "tccardos",	sc_pkcs15emu_tccardos_init_ex	},
-	{ "entersafe",  sc_pkcs15emu_entersafe_init_ex  },
+	{ "entersafe",  sc_pkcs15emu_entersafe_init_ex	},
 	{ "pteid",	sc_pkcs15emu_pteid_init_ex	},
 	{ "oberthur",   sc_pkcs15emu_oberthur_init_ex	},
 	{ "sc-hsm",	sc_pkcs15emu_sc_hsm_init_ex	},
-	{ "dnie",       sc_pkcs15emu_dnie_init_ex   },
-	{ "gids",       sc_pkcs15emu_gids_init_ex   },
-	{ "iasecc",	sc_pkcs15emu_iasecc_init_ex   },
-	{ "jpki",	sc_pkcs15emu_jpki_init_ex },
+	{ "dnie",       sc_pkcs15emu_dnie_init_ex	},
+	{ "gids",       sc_pkcs15emu_gids_init_ex	},
+	{ "iasecc",	sc_pkcs15emu_iasecc_init_ex	},
+	{ "jpki",	sc_pkcs15emu_jpki_init_ex	},
 	{ "coolkey",    sc_pkcs15emu_coolkey_init_ex	},
-	{ "din66291",    sc_pkcs15emu_din_66291_init_ex	},
+	{ "din66291",   sc_pkcs15emu_din_66291_init_ex	},
+	{ "esteid2018", sc_pkcs15emu_esteid2018_init_ex	},
+
 	{ NULL, NULL }
 };
 
@@ -69,7 +72,7 @@ static const char *builtin_name = "builtin";
 static const char *func_name    = "sc_pkcs15_init_func";
 static const char *exfunc_name  = "sc_pkcs15_init_func_ex";
 
-
+// FIXME: have a flag in card->flags to indicate the same
 int sc_pkcs15_is_emulation_only(sc_card_t *card)
 {
 	switch (card->type) {
@@ -91,6 +94,7 @@ int sc_pkcs15_is_emulation_only(sc_card_t *card)
 		case SC_CARD_TYPE_PIV_II_HIST:
 		case SC_CARD_TYPE_PIV_II_NEO:
 		case SC_CARD_TYPE_PIV_II_YUBIKEY4:
+		case SC_CARD_TYPE_ESTEID_2018:
 
 			return 1;
 		default:
@@ -103,11 +107,9 @@ sc_pkcs15_bind_synthetic(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 {
 	sc_context_t		*ctx = p15card->card->ctx;
 	scconf_block		*conf_block, **blocks, *blk;
-	sc_pkcs15emu_opt_t	opts;
 	int			i, r = SC_ERROR_WRONG_CARD;
 
 	SC_FUNC_CALLED(ctx, SC_LOG_DEBUG_VERBOSE);
-	memset(&opts, 0, sizeof(opts));
 	conf_block = NULL;
 
 	conf_block = sc_get_conf_block(ctx, "framework", "pkcs15", 1);
@@ -117,7 +119,7 @@ sc_pkcs15_bind_synthetic(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 		sc_log(ctx, "no conf file (or section), trying all builtin emulators");
 		for (i = 0; builtin_emulators[i].name; i++) {
 			sc_log(ctx, "trying %s", builtin_emulators[i].name);
-			r = builtin_emulators[i].handler(p15card, aid, &opts);
+			r = builtin_emulators[i].handler(p15card, aid);
 			if (r == SC_SUCCESS)
 				/* we got a hit */
 				goto out;
@@ -139,7 +141,7 @@ sc_pkcs15_bind_synthetic(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 				sc_log(ctx, "trying %s", name);
 				for (i = 0; builtin_emulators[i].name; i++)
 					if (!strcmp(builtin_emulators[i].name, name)) {
-						r = builtin_emulators[i].handler(p15card, aid, &opts);
+						r = builtin_emulators[i].handler(p15card, aid);
 						if (r == SC_SUCCESS)
 							/* we got a hit */
 							goto out;
@@ -150,7 +152,7 @@ sc_pkcs15_bind_synthetic(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 			sc_log(ctx, "no emulator list in config file, trying all builtin emulators");
 			for (i = 0; builtin_emulators[i].name; i++) {
 				sc_log(ctx, "trying %s", builtin_emulators[i].name);
-				r = builtin_emulators[i].handler(p15card, aid, &opts);
+				r = builtin_emulators[i].handler(p15card, aid);
 				if (r == SC_SUCCESS)
 					/* we got a hit */
 					goto out;
@@ -191,10 +193,9 @@ static int parse_emu_block(sc_pkcs15_card_t *p15card, struct sc_aid *aid, scconf
 {
 	sc_card_t	*card = p15card->card;
 	sc_context_t	*ctx = card->ctx;
-	sc_pkcs15emu_opt_t opts;
 	void *handle = NULL;
 	int		(*init_func)(sc_pkcs15_card_t *);
-	int		(*init_func_ex)(sc_pkcs15_card_t *, struct sc_aid *, sc_pkcs15emu_opt_t *);
+	int		(*init_func_ex)(sc_pkcs15_card_t *, struct sc_aid *);
 	int		r;
 	const char	*driver, *module_name;
 
@@ -202,9 +203,6 @@ static int parse_emu_block(sc_pkcs15_card_t *p15card, struct sc_aid *aid, scconf
 
 	init_func    = NULL;
 	init_func_ex = NULL;
-
-	memset(&opts, 0, sizeof(opts));
-	opts.blk     = conf;
 
 	module_name = scconf_get_str(conf, "module", builtin_name);
 	if (!strcmp(module_name, "builtin")) {
@@ -260,12 +258,12 @@ static int parse_emu_block(sc_pkcs15_card_t *p15card, struct sc_aid *aid, scconf
 
 			address = sc_dlsym(handle, name);
 			if (address)
-				init_func_ex = (int (*)(sc_pkcs15_card_t *, struct sc_aid *, sc_pkcs15emu_opt_t *)) address;
+				init_func_ex = (int (*)(sc_pkcs15_card_t *, struct sc_aid *)) address;
 		}
 	}
 	/* try to initialize the pkcs15 structures */
 	if (init_func_ex)
-		r = init_func_ex(p15card, aid, &opts);
+		r = init_func_ex(p15card, aid);
 	else if (init_func)
 		r = init_func(p15card);
 	else
@@ -393,11 +391,15 @@ int sc_pkcs15emu_object_add(sc_pkcs15_card_t *p15card, unsigned int type,
 	unsigned int	df_type;
 	size_t		data_len;
 
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_VERBOSE);
+
 	obj = calloc(1, sizeof(*obj));
-	if (!obj)
-		return SC_ERROR_OUT_OF_MEMORY;
+	if (!obj) {
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_OUT_OF_MEMORY);
+	}
+
 	memcpy(obj, in_obj, sizeof(*obj));
-	obj->type  = type;
+	obj->type = type;
 
 	switch (type & SC_PKCS15_TYPE_CLASS_MASK) {
 	case SC_PKCS15_TYPE_AUTH:
@@ -423,19 +425,19 @@ int sc_pkcs15emu_object_add(sc_pkcs15_card_t *p15card, unsigned int type,
 	default:
 		sc_log(p15card->card->ctx, "Unknown PKCS15 object type %d", type);
 		free(obj);
-		return SC_ERROR_INVALID_ARGUMENTS;
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 	}
 
 	obj->data = calloc(1, data_len);
 	if (obj->data == NULL) {
 		free(obj);
-		return SC_ERROR_OUT_OF_MEMORY;
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_OUT_OF_MEMORY);
 	}
 	memcpy(obj->data, data, data_len);
 
 	obj->df = sc_pkcs15emu_get_df(p15card, df_type);
 	sc_pkcs15_add_object(p15card, obj);
 
-	return SC_SUCCESS;
+	LOG_FUNC_RETURN(p15card->card->ctx, SC_SUCCESS);
 }
 

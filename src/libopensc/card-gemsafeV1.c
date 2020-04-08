@@ -32,6 +32,7 @@
 #define GEMSAFEV3_ALG_REF_FREEFORM	0x02
 #define GEMSAFEV3_ALG_REF_SHA1		0x12
 #define GEMSAFEV3_ALG_REF_SHA256	0x42
+#define MAX_RESP_BUFFER_SIZE 2048
 
 static struct sc_card_operations gemsafe_ops;
 static struct sc_card_operations *iso_ops = NULL;
@@ -61,6 +62,8 @@ static const struct sc_atr_table gemsafe_atrs[] = {
     {"3B:7D:95:00:00:80:31:80:65:B0:83:11:C0:A9:83:00:90:00", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_PTEID, 0, NULL},
     {"3B:7D:95:00:00:80:31:80:65:B0:83:11:00:C8:83:00", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_PTEID, 0, NULL},
     {"3B:7D:95:00:00:80:31:80:65:B0:83:11:00:C8:83:00:90:00", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_PTEID, 0, NULL},
+    {"3B:FF:96:00:00:81:31:80:43:80:31:80:65:B0:85:03:00:EF:12:0F:FF:82:90:00:67", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_PTEID, 0, NULL},
+    {"3B:FF:96:00:00:81:31:FE:43:80:31:80:65:B0:85:04:01:20:12:0F:FF:82:90:00:D0", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_PTEID, 0, NULL},
     /* Swedish eID card */
     {"3B:7D:96:00:00:80:31:80:65:B0:83:11:00:C8:83:00:90:00", NULL, NULL, SC_CARD_TYPE_GEMSAFEV1_SEEID, 0, NULL},
     /* European Patent Office epoline card*/
@@ -120,7 +123,7 @@ static int get_conf_aid(sc_card_t *card, u8 *aid, size_t *len)
 static int gp_select_applet(sc_card_t *card, const u8 *aid, size_t aid_len)
 {
 	int	r;
-	u8	buf[SC_MAX_APDU_BUFFER_SIZE];
+	u8	buf[MAX_RESP_BUFFER_SIZE];
 	struct sc_context *ctx = card->ctx;
 	struct sc_apdu    apdu;
 
@@ -197,36 +200,35 @@ static int gemsafe_init(struct sc_card *card)
 	card->lock_count--;
 
 	/* set the supported algorithm */
-	r = gemsafe_match_card(card);
-	if (r > 0) {
-		unsigned long flags;
+	unsigned long flags;
 
-		flags  = SC_ALGORITHM_RSA_PAD_PKCS1;
-		flags |= SC_ALGORITHM_RSA_PAD_ISO9796;
-		flags |= SC_ALGORITHM_ONBOARD_KEY_GEN;
-		flags |= SC_ALGORITHM_RSA_HASH_NONE;
+	flags  = SC_ALGORITHM_RSA_PAD_PKCS1;
+	flags |= SC_ALGORITHM_RSA_PAD_ISO9796;
+	flags |= SC_ALGORITHM_ONBOARD_KEY_GEN;
+	flags |= SC_ALGORITHM_RSA_HASH_NONE;
 
-		/* GemSAFE V3 cards support SHA256 */
-		if (card->type == SC_CARD_TYPE_GEMSAFEV1_PTEID ||
-		    card->type == SC_CARD_TYPE_GEMSAFEV1_SEEID)
-			flags |= SC_ALGORITHM_RSA_HASH_SHA256;
+	/* GemSAFE V3 cards support SHA256 */
+	if (card->type == SC_CARD_TYPE_GEMSAFEV1_PTEID ||
+	    card->type == SC_CARD_TYPE_GEMSAFEV1_SEEID)
+		flags |= SC_ALGORITHM_RSA_HASH_SHA256;
+
+	_sc_card_add_rsa_alg(card,  512, flags, 0);
+	_sc_card_add_rsa_alg(card,  768, flags, 0);
+	_sc_card_add_rsa_alg(card, 1024, flags, 0);
+	_sc_card_add_rsa_alg(card, 2048, flags, 0);
+	_sc_card_add_rsa_alg(card, 3072, flags, 0);
+	_sc_card_add_rsa_alg(card, 4096, flags, 0);
+
+	/* fake algorithm to persuade register_mechanisms()
+	 * to register these hashes */
+	if (card->type == SC_CARD_TYPE_GEMSAFEV1_PTEID ||
+	    card->type == SC_CARD_TYPE_GEMSAFEV1_SEEID) {
+		flags  = SC_ALGORITHM_RSA_HASH_SHA1;
+		flags |= SC_ALGORITHM_RSA_HASH_MD5;
+		flags |= SC_ALGORITHM_RSA_HASH_MD5_SHA1;
+		flags |= SC_ALGORITHM_RSA_HASH_RIPEMD160;
 
 		_sc_card_add_rsa_alg(card,  512, flags, 0);
-		_sc_card_add_rsa_alg(card,  768, flags, 0);
-		_sc_card_add_rsa_alg(card, 1024, flags, 0);
-		_sc_card_add_rsa_alg(card, 2048, flags, 0);
-
-		/* fake algorithm to persuade register_mechanisms()
-		 * to register these hashes */
-		if (card->type == SC_CARD_TYPE_GEMSAFEV1_PTEID ||
-		    card->type == SC_CARD_TYPE_GEMSAFEV1_SEEID) {
-			flags  = SC_ALGORITHM_RSA_HASH_SHA1;
-			flags |= SC_ALGORITHM_RSA_HASH_MD5;
-			flags |= SC_ALGORITHM_RSA_HASH_MD5_SHA1;
-			flags |= SC_ALGORITHM_RSA_HASH_RIPEMD160;
-
-			_sc_card_add_rsa_alg(card,  512, flags, 0);
-		}
 	}
 
 	card->caps |= SC_CARD_CAP_ISO7816_PIN_INFO;
@@ -454,8 +456,8 @@ static int gemsafe_compute_signature(struct sc_card *card, const u8 * data,
 {
 	int r, len;
 	struct sc_apdu apdu;
-	u8 rbuf[SC_MAX_APDU_BUFFER_SIZE];
-	u8 sbuf[SC_MAX_APDU_BUFFER_SIZE];
+	u8 rbuf[MAX_RESP_BUFFER_SIZE];
+	u8 sbuf[MAX_RESP_BUFFER_SIZE];
 	sc_context_t *ctx = card->ctx;
 
 	SC_FUNC_CALLED(ctx, SC_LOG_DEBUG_VERBOSE);
@@ -520,7 +522,7 @@ static int gemsafe_decipher(struct sc_card *card, const u8 * crgram,
 {
 	int r;
 	struct sc_apdu apdu;
-	u8 rbuf[SC_MAX_APDU_BUFFER_SIZE];
+	u8 rbuf[MAX_RESP_BUFFER_SIZE];
 	sc_context_t *ctx = card->ctx;
 
 	SC_FUNC_CALLED(ctx, SC_LOG_DEBUG_VERBOSE);

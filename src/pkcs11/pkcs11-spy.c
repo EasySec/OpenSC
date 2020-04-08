@@ -784,6 +784,26 @@ C_EncryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT
 	enter("C_EncryptInit");
 	spy_dump_ulong_in("hSession", hSession);
 	fprintf(spy_output, "pMechanism->type=%s\n", lookup_enum(MEC_T, pMechanism->mechanism));
+	switch (pMechanism->mechanism) {
+	case CKM_AES_GCM:
+		if (pMechanism->pParameter != NULL) {
+			CK_GCM_PARAMS *param =
+				(CK_GCM_PARAMS *) pMechanism->pParameter;
+			spy_dump_string_in("pIv[ulIvLen]",
+				param->pIv, param->ulIvLen);
+			spy_dump_ulong_in("ulIvBits", param->ulIvBits);
+			spy_dump_string_in("pAAD[ulAADLen]",
+				param->pAAD, param->ulAADLen);
+			fprintf(spy_output, "pMechanism->pParameter->ulTagBits=%lu\n", param->ulTagBits);
+		} else {
+			fprintf(spy_output, "Parameters block for %s is empty...\n",
+				lookup_enum(MEC_T, pMechanism->mechanism));
+		}
+		break;
+	default:
+		spy_dump_string_in("pParameter[ulParameterLen]", pMechanism->pParameter, pMechanism->ulParameterLen);
+		break;
+	}
 	spy_dump_ulong_in("hKey", hKey);
 	rv = po->C_EncryptInit(hSession, pMechanism, hKey);
 	return retne(rv);
@@ -860,6 +880,7 @@ C_DecryptInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT
 		}
 		break;
 	default:
+		spy_dump_string_in("pParameter[ulParameterLen]", pMechanism->pParameter, pMechanism->ulParameterLen);
 		break;
 	}
 	spy_dump_ulong_in("hKey", hKey);
@@ -1092,6 +1113,27 @@ C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_
 	enter("C_VerifyInit");
 	spy_dump_ulong_in("hSession", hSession);
 	fprintf(spy_output, "pMechanism->type=%s\n", lookup_enum(MEC_T, pMechanism->mechanism));
+	switch (pMechanism->mechanism) {
+	case CKM_RSA_PKCS_PSS:
+	case CKM_SHA1_RSA_PKCS_PSS:
+	case CKM_SHA256_RSA_PKCS_PSS:
+	case CKM_SHA384_RSA_PKCS_PSS:
+	case CKM_SHA512_RSA_PKCS_PSS:
+		if (pMechanism->pParameter != NULL) {
+			CK_RSA_PKCS_PSS_PARAMS *param =
+				(CK_RSA_PKCS_PSS_PARAMS *) pMechanism->pParameter;
+			fprintf(spy_output, "pMechanism->pParameter->hashAlg=%s\n",
+				lookup_enum(MEC_T, param->hashAlg));
+			fprintf(spy_output, "pMechanism->pParameter->mgf=%s\n",
+				lookup_enum(MGF_T, param->mgf));
+			fprintf(spy_output, "pMechanism->pParameter->sLen=%lu\n",
+				param->sLen);
+		} else {
+			fprintf(spy_output, "Parameters block for %s is empty...\n",
+				lookup_enum(MEC_T, pMechanism->mechanism));
+		}
+		break;
+	}
 	spy_dump_ulong_in("hKey", hKey);
 	rv = po->C_VerifyInit(hSession, pMechanism, hKey);
 	return retne(rv);
@@ -1318,7 +1360,52 @@ C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_H
 
 	enter("C_DeriveKey");
 	spy_dump_ulong_in("hSession", hSession);
-	fprintf(spy_output, "pMechanism->type=%s\n", lookup_enum(MEC_T, pMechanism->mechanism));
+	fprintf(spy_output, "[in] pMechanism->type=%s\n",
+		lookup_enum(MEC_T, pMechanism->mechanism));
+	switch (pMechanism->mechanism) {
+	case CKM_ECDH1_DERIVE:
+	case CKM_ECDH1_COFACTOR_DERIVE:
+		if (pMechanism->pParameter == NULL) {
+			fprintf(spy_output, "[in] pMechanism->pParameter = NULL\n");
+			break;
+		}
+		CK_ECDH1_DERIVE_PARAMS *param =
+			(CK_ECDH1_DERIVE_PARAMS *) pMechanism->pParameter;
+		fprintf(spy_output, "[in] pMechanism->pParameter = {\n\tkdf=%s\n",
+			lookup_enum(CKD_T, param->kdf));
+		fprintf(spy_output, "\tpSharedData[ulSharedDataLen] = ");
+		print_generic(spy_output, 0, param->pSharedData,
+			param->ulSharedDataLen, NULL);
+		fprintf(spy_output, "\tpPublicData[ulPublicDataLen] = ");
+		print_generic(spy_output, 0, param->pPublicData,
+			param->ulPublicDataLen, NULL);
+		fprintf(spy_output, "}\n");
+		break;
+	case CKM_ECMQV_DERIVE:
+		if (pMechanism->pParameter == NULL) {
+			fprintf(spy_output, "[in] pMechanism->pParameter = NULL\n");
+			break;
+		}
+		CK_ECMQV_DERIVE_PARAMS *param2 =
+			(CK_ECMQV_DERIVE_PARAMS *) pMechanism->pParameter;
+		fprintf(spy_output, "[in] pMechanism->pParameter = {\n\tkdf=%s\n",
+			lookup_enum(CKD_T, param2->kdf));
+		fprintf(spy_output, "\tpSharedData[ulSharedDataLen] =");
+		print_generic(spy_output, 0, param2->pSharedData,
+			param2->ulSharedDataLen, NULL);
+		fprintf(spy_output, "\tpPublicData[ulPublicDataLen] = ");
+		print_generic(spy_output, 0, param2->pPublicData,
+			param2->ulPublicDataLen, NULL);
+		fprintf(spy_output, "\tulPrivateDataLen = %lu",
+			param2->ulPrivateDataLen);
+		fprintf(spy_output, "\thPrivateData = %lu", param2->hPrivateData);
+		fprintf(spy_output, "\tpPublicData2[ulPublicDataLen2] = ");
+		print_generic(spy_output, 0, param2->pPublicData2,
+			param2->ulPublicDataLen2, NULL);
+		fprintf(spy_output, "\tpublicKey = %lu", param2->publicKey);
+		fprintf(spy_output, "}\n");
+		break;
+	}
 	spy_dump_ulong_in("hBaseKey", hBaseKey);
 	spy_attribute_list_in("pTemplate", pTemplate, ulAttributeCount);
 	rv = po->C_DeriveKey(hSession, pMechanism, hBaseKey, pTemplate, ulAttributeCount, phKey);

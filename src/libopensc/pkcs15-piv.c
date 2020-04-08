@@ -40,8 +40,6 @@
 
 #define MANU_ID		"piv_II "
 
-int sc_pkcs15emu_piv_init_ex(sc_pkcs15_card_t *, struct sc_aid *aid, sc_pkcs15emu_opt_t *);
-
 typedef struct objdata_st {
 	const char *id;
 	const char *label;
@@ -54,8 +52,8 @@ typedef struct objdata_st {
 typedef struct cdata_st {
 	const char *id;
 	const char *label;
-	int	    authority;
 	const char *path;
+	int	    authority;
 	int         obj_flags;
 } cdata;
 
@@ -332,30 +330,30 @@ static int sc_pkcs15emu_piv_init(sc_pkcs15_card_t *p15card)
 #define PIV_NUM_CERTS_AND_KEYS 24
 
 	static const cdata certs[PIV_NUM_CERTS_AND_KEYS] = {
-		{"01", "Certificate for PIV Authentication", 0, "0101cece", 0},
-		{"02", "Certificate for Digital Signature", 0, "0100cece", 0},
-		{"03", "Certificate for Key Management", 0, "0102cece", 0},
-		{"04", "Certificate for Card Authentication", 0, "0500cece", 0},
-		{"05", "Retired Certificate for Key Management 1", 0, "1001cece", 0},
-		{"06", "Retired Certificate for Key Management 2", 0, "1002cece", 0},
-		{"07", "Retired Certificate for Key Management 3", 0, "1003cece", 0},
-		{"08", "Retired Certificate for Key Management 4", 0, "1004cece", 0},
-		{"09", "Retired Certificate for Key Management 5", 0, "1005cece", 0},
-		{"10", "Retired Certificate for Key Management 6", 0, "1006cece", 0},
-		{"11", "Retired Certificate for Key Management 7", 0, "1007cece", 0},
-		{"12", "Retired Certificate for Key Management 8", 0, "1008cece", 0},
-		{"13", "Retired Certificate for Key Management 9", 0, "1009cece", 0},
-		{"14", "Retired Certificate for Key Management 10", 0, "100Acece", 0},
-		{"15", "Retired Certificate for Key Management 11", 0, "100Bcece", 0},
-		{"16", "Retired Certificate for Key Management 12", 0, "100Ccece", 0},
-		{"17", "Retired Certificate for Key Management 13", 0, "100Dcece", 0},
-		{"18", "Retired Certificate for Key Management 14", 0, "100Ecece", 0},
-		{"19", "Retired Certificate for Key Management 15", 0, "100Fcece", 0},
-		{"20", "Retired Certificate for Key Management 16", 0, "1010cece", 0},
-		{"21", "Retired Certificate for Key Management 17", 0, "1011cece", 0},
-		{"22", "Retired Certificate for Key Management 18", 0, "1012cece", 0},
-		{"23", "Retired Certificate for Key Management 19", 0, "1013cece", 0},
-		{"24", "Retired Certificate for Key Management 20", 0, "1014cece", 0}
+		{"01", "Certificate for PIV Authentication", "0101cece", 0, 0},
+		{"02", "Certificate for Digital Signature", "0100cece", 0, 0},
+		{"03", "Certificate for Key Management", "0102cece", 0, 0},
+		{"04", "Certificate for Card Authentication", "0500cece", 0, 0},
+		{"05", "Retired Certificate for Key Management 1", "1001cece", 0, 0},
+		{"06", "Retired Certificate for Key Management 2", "1002cece", 0, 0},
+		{"07", "Retired Certificate for Key Management 3", "1003cece", 0, 0},
+		{"08", "Retired Certificate for Key Management 4", "1004cece", 0, 0},
+		{"09", "Retired Certificate for Key Management 5", "1005cece", 0, 0},
+		{"10", "Retired Certificate for Key Management 6", "1006cece", 0, 0},
+		{"11", "Retired Certificate for Key Management 7", "1007cece", 0, 0},
+		{"12", "Retired Certificate for Key Management 8", "1008cece", 0, 0},
+		{"13", "Retired Certificate for Key Management 9", "1009cece", 0, 0},
+		{"14", "Retired Certificate for Key Management 10", "100Acece", 0, 0},
+		{"15", "Retired Certificate for Key Management 11", "100Bcece", 0, 0},
+		{"16", "Retired Certificate for Key Management 12", "100Ccece", 0, 0},
+		{"17", "Retired Certificate for Key Management 13", "100Dcece", 0, 0},
+		{"18", "Retired Certificate for Key Management 14", "100Ecece", 0, 0},
+		{"19", "Retired Certificate for Key Management 15", "100Fcece", 0, 0},
+		{"20", "Retired Certificate for Key Management 16", "1010cece", 0, 0},
+		{"21", "Retired Certificate for Key Management 17", "1011cece", 0, 0},
+		{"22", "Retired Certificate for Key Management 18", "1012cece", 0, 0},
+		{"23", "Retired Certificate for Key Management 19", "1013cece", 0, 0},
+		{"24", "Retired Certificate for Key Management 20", "1014cece", 0, 0}
 	};
 
 	static const pindata pins[] = {
@@ -763,6 +761,7 @@ static int sc_pkcs15emu_piv_init(sc_pkcs15_card_t *p15card)
 			sc_log(card->ctx,  "Failed to read/parse the certificate r=%d",r);
 			if (cert_out != NULL)
 				sc_pkcs15_free_certificate(cert_out);
+			free(cert_der.value);
 			continue;
 		}
 
@@ -983,7 +982,7 @@ sc_log(card->ctx,  "DEE Adding pin %d label=%s",i, label);
 	for (i = 0; i < PIV_NUM_CERTS_AND_KEYS; i++) {
 		struct sc_pkcs15_pubkey_info pubkey_info;
 		struct sc_pkcs15_object     pubkey_obj;
-		struct sc_pkcs15_pubkey *p15_key;
+		struct sc_pkcs15_pubkey *p15_key = NULL;
 
 		memset(&pubkey_info, 0, sizeof(pubkey_info));
 		memset(&pubkey_obj,  0, sizeof(pubkey_obj));
@@ -1037,8 +1036,10 @@ sc_log(card->ctx,  "DEE Adding pin %d label=%s",i, label);
 			sc_log(card->ctx, "Adding pubkey from file %s",filename);
 
 			r = sc_pkcs15_pubkey_from_spki_file(card->ctx,  filename, &p15_key);
-			if (r < 0) 
+			if (r < 0) {
+				free(p15_key);
 				continue;
+			}
 
 			/* Lets also try another method. */
 			r = sc_pkcs15_encode_pubkey_as_spki(card->ctx, p15_key, &pubkey_info.direct.spki.value, &pubkey_info.direct.spki.len);
@@ -1205,19 +1206,14 @@ sc_log(card->ctx,  "DEE Adding pin %d label=%s",i, label);
 }
 
 int sc_pkcs15emu_piv_init_ex(sc_pkcs15_card_t *p15card,
-		struct sc_aid *aid, sc_pkcs15emu_opt_t *opts)
+		struct sc_aid *aid)
 {
 	sc_card_t   *card = p15card->card;
 	sc_context_t    *ctx = card->ctx;
 
 	SC_FUNC_CALLED(ctx, SC_LOG_DEBUG_VERBOSE);
 
-	if (opts && opts->flags & SC_PKCS15EMU_FLAGS_NO_CHECK)
-		return sc_pkcs15emu_piv_init(p15card);
-	else {
-		int r = piv_detect_card(p15card);
-		if (r)
-			return SC_ERROR_WRONG_CARD;
-		return sc_pkcs15emu_piv_init(p15card);
-	}
+	if (piv_detect_card(p15card))
+		return SC_ERROR_WRONG_CARD;
+	return sc_pkcs15emu_piv_init(p15card);
 }

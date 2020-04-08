@@ -38,6 +38,7 @@
 #endif
 
 #include "common/libscdl.h"
+#include "common/compat_strlcpy.h"
 #include "internal.h"
 #include "sc-ossl-compat.h"
 
@@ -126,6 +127,8 @@ static const struct _sc_driver_entry internal_card_drivers[] = {
 	{ "masktech",	(void *(*)(void)) sc_get_masktech_driver },
 	{ "atrust-acos",(void *(*)(void)) sc_get_atrust_acos_driver },
 	{ "westcos",	(void *(*)(void)) sc_get_westcos_driver },
+	{ "esteid2018",	(void *(*)(void)) sc_get_esteid2018_driver },
+	{ "idprime",	(void *(*)(void)) sc_get_idprime_driver },
 
 /* Here should be placed drivers that need some APDU transactions in the
  * driver's `match_card()` function. */
@@ -179,9 +182,9 @@ sc_ctx_win32_get_config_value(const char *name_env,
 		return SC_ERROR_INVALID_ARGUMENTS;
 
 	if (name_env)   {
-		char *value = value = getenv(name_env);
+		char *value = getenv(name_env);
 		if (value) {
-			if (strlen(value) < *out_len)
+			if (strlen(value) > *out_len)
 				return SC_ERROR_NOT_ENOUGH_MEMORY;
 			memcpy(out, value, strlen(value));
 			*out_len = strlen(value);
@@ -824,6 +827,7 @@ int sc_context_create(sc_context_t **ctx_out, const sc_context_param_t *parm)
 	set_defaults(ctx, &opts);
 
 	if (0 != list_init(&ctx->readers)) {
+		del_drvs(&opts);
 		sc_release_context(ctx);
 		return SC_ERROR_OUT_OF_MEMORY;
 	}
@@ -833,6 +837,7 @@ int sc_context_create(sc_context_t **ctx_out, const sc_context_param_t *parm)
 		ctx->thread_ctx = parm->thread_ctx;
 	r = sc_mutex_create(ctx, &ctx->mutex);
 	if (r != SC_SUCCESS) {
+		del_drvs(&opts);
 		sc_release_context(ctx);
 		return r;
 	}
@@ -859,6 +864,7 @@ int sc_context_create(sc_context_t **ctx_out, const sc_context_param_t *parm)
 
 	r = ctx->reader_driver->ops->init(ctx);
 	if (r != SC_SUCCESS)   {
+		del_drvs(&opts);
 		sc_release_context(ctx);
 		return r;
 	}
@@ -994,9 +1000,7 @@ int sc_get_cache_dir(sc_context_t *ctx, char *buf, size_t bufsize)
 	conf_block = sc_get_conf_block(ctx, "framework", "pkcs15", 1);
 	cache_dir = scconf_get_str(conf_block, "file_cache_dir", NULL);
 	if (cache_dir != NULL) {
-		if (bufsize <= strlen(cache_dir))
-			return SC_ERROR_BUFFER_TOO_SMALL;
-		strcpy(buf, cache_dir);
+		strlcpy(buf, cache_dir, bufsize);
 		return SC_SUCCESS;
 	}
 

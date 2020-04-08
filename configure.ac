@@ -7,7 +7,7 @@ define([PRODUCT_TARNAME], [opensc])
 define([PRODUCT_BUGREPORT], [https://github.com/OpenSC/OpenSC/issues])
 define([PRODUCT_URL], [https://github.com/OpenSC/OpenSC])
 define([PACKAGE_VERSION_MAJOR], [0])
-define([PACKAGE_VERSION_MINOR], [19])
+define([PACKAGE_VERSION_MINOR], [20])
 define([PACKAGE_VERSION_FIX], [0])
 define([PACKAGE_SUFFIX], [])
 
@@ -21,7 +21,7 @@ define([VS_FF_PRODUCT_URL], [https://github.com/OpenSC/OpenSC])
 
 m4_sinclude(version.m4.ci)
 
-m4_define([openssl_minimum_version], [0.9.8])
+m4_define([openssl_minimum_version], [1.0.1])
 
 AC_INIT([PRODUCT_NAME],[PACKAGE_VERSION_MAJOR.PACKAGE_VERSION_MINOR.PACKAGE_VERSION_FIX[]PACKAGE_SUFFIX],[PRODUCT_BUGREPORT],[PRODUCT_TARNAME],[PRODUCT_URL])
 AC_CONFIG_AUX_DIR([.])
@@ -131,8 +131,19 @@ case "${host}" in
 	;;
 esac
 
-AX_CHECK_COMPILE_FLAG(-Wunknown-warning-option, [have_unknown_warning_option="yes"], [have_unknown_warning_option="no"], [-Werror])
+AX_CODE_COVERAGE()
+
+AX_CHECK_COMPILE_FLAG([-Wunknown-warning-option], [have_unknown_warning_option="yes"], [have_unknown_warning_option="no"], [-Werror])
 AM_CONDITIONAL([HAVE_UNKNOWN_WARNING_OPTION], [test "${have_unknown_warning_option}" = "yes"])
+
+AC_ARG_ENABLE(
+	[fuzzing],
+	[AS_HELP_STRING([--enable-fuzzing],[enable compile of fuzzing tests @<:@disabled@:>@, note that CFLAGS and FUZZING_LIBS should be set accoringly, e.g. to something like CFLAGS="-fsanitize=address,fuzzer" FUZZING_LIBS="-fsanitize=fuzzer"])],
+	,
+	[enable_fuzzing="no"]
+)
+
+AC_ARG_VAR([FUZZING_LIBS], [linker flags for fuzzing])
 
 AC_ARG_ENABLE(
 	[strict],
@@ -268,10 +279,10 @@ AC_ARG_ENABLE(
 )
 
 AC_ARG_ENABLE(
-	[tests],
-	[AS_HELP_STRING([--enable-tests],[Build tests in src/tests/ directory @<:@detect@:>@])],
+	[cmocka],
+	[AS_HELP_STRING([--enable-cmocka],[Build tests in src/tests/p11test directory @<:@detect@:>@])],
 	,
-	[enable_tests="detect"]
+	[enable_cmocka="detect"]
 )
 
 AC_ARG_WITH(
@@ -389,7 +400,8 @@ AC_HEADER_ASSERT
 AC_CHECK_HEADERS([ \
 	errno.h fcntl.h stdlib.h \
 	inttypes.h string.h strings.h \
-	sys/time.h unistd.h sys/mman.h
+	sys/time.h unistd.h sys/mman.h \
+	sys/endian.h endian.h
 ])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
@@ -404,7 +416,7 @@ AC_FUNC_STAT
 AC_FUNC_VPRINTF
 AC_CHECK_FUNCS([ \
 	getpass gettimeofday getline memset mkdir \
-	strdup strerror \
+	strdup strerror memset_s explicit_bzero \
 	strlcpy strlcat strnlen sigaction
 ])
 AC_CHECK_SIZEOF(void *)
@@ -625,10 +637,7 @@ fi
 
 PKG_CHECK_MODULES(
 	[OPENSSL],
-	[
-		libcrypto >= openssl_minimum_version
-		openssl >= openssl_minimum_version
-	],
+	[libcrypto >= openssl_minimum_version],
 	[have_openssl="yes"],
 	[AC_CHECK_LIB(
 		[crypto],
@@ -669,20 +678,17 @@ else
 	OPENSSL_LIBS=""
 fi
 
-if test "${enable_tests}" = "detect"; then
+if test "${enable_cmocka}" = "detect"; then
 	if test "${have_cmocka}" = "yes" -a "${have_openssl}" = "yes"; then
-		enable_tests="yes"
+		enable_cmocka="yes"
 	else
-		enable_tests="no"
+		enable_cmocka="no"
 	fi
 fi
 
-if test "${enable_tests}" = "yes"; then
+if test "${enable_cmocka}" = "yes"; then
 	if test "${have_cmocka}" != "yes"; then
 		AC_MSG_ERROR([Tests required, but cmocka is not available])
-	fi
-	if test "${have_openssl}" != "yes"; then
-		AC_MSG_ERROR([Tests required, but openssl is not available])
 	fi
 fi
 
@@ -931,6 +937,9 @@ fi
 AC_ARG_VAR([GENGETOPT],
            [absolute path to gengetopt used for command line parsing of npa-tool])
 AC_PATH_PROG(GENGETOPT, gengetopt, not found)
+AC_ARG_VAR([CLANGTIDY],
+           [absolute path to clang-tidy used for static code analysis])
+AC_PATH_PROG(CLANGTIDY, clang-tidy, not found)
 
 AX_FUNC_GETOPT_LONG
 #AH_BOTTOM([#include "common/compat_getopt.h"])
@@ -1056,18 +1065,18 @@ AM_CONDITIONAL([ENABLE_SM], [test "${enable_sm}" = "yes"])
 AM_CONDITIONAL([ENABLE_DNIE_UI], [test "${enable_dnie_ui}" = "yes"])
 AM_CONDITIONAL([ENABLE_NPATOOL], [test "${ENABLE_NPATOOL}" = "yes"])
 AM_CONDITIONAL([ENABLE_AUTOSTART], [test "${enable_autostart}" = "yes"])
-AM_CONDITIONAL([ENABLE_TESTS], [test "${enable_tests}" = "yes"])
+AM_CONDITIONAL([ENABLE_CMOCKA], [test "${enable_cmocka}" = "yes"])
 AM_CONDITIONAL([GIT_CHECKOUT], [test "${GIT_CHECKOUT}" = "yes"])
-
+AM_CONDITIONAL([ENABLE_FUZZING], [test "${enable_fuzzing}" = "yes"])
 AM_CONDITIONAL([ENABLE_SHARED], [test "${enable_shared}" = "yes"])
 AS_IF([test "${enable_shared}" = "yes"], [AC_DEFINE([ENABLE_SHARED], [1], [Enable shared libraries])])
 
 if test "${enable_pedantic}" = "yes"; then
 	enable_strict="yes";
-	CFLAGS="${CFLAGS} -pedantic"
+	CFLAGS="-pedantic ${CFLAGS}"
 fi
 if test "${enable_strict}" = "yes"; then
-	CFLAGS="${CFLAGS} -Wall -Wextra -Wno-unused-parameter -Werror"
+	CFLAGS="-Wall -Wextra -Wno-unused-parameter -Werror ${CFLAGS}"
 fi
 
 AC_CONFIG_FILES([
@@ -1091,6 +1100,8 @@ AC_CONFIG_FILES([
 	src/tests/Makefile
 	src/tests/regression/Makefile
 	src/tests/p11test/Makefile
+	src/tests/fuzzing/Makefile
+	src/tests/unittests/Makefile
 	src/tools/Makefile
 	src/tools/versioninfo-tools.rc
 	src/tools/versioninfo-opensc-notify.rc
@@ -1106,9 +1117,11 @@ AC_CONFIG_FILES([
 	win32/OpenSC.wxs
 	MacOSX/Makefile
 	MacOSX/build-package
+	MacOSX/build-package-from-ci
 	MacOSX/Distribution.xml
 	MacOSX/resources/Welcome.html
 ])
+
 AC_OUTPUT
 
 cat <<EOF
@@ -1151,7 +1164,7 @@ SM default module:       ${DEFAULT_SM_MODULE}
 SM default path:         $(eval eval eval echo "${DEFAULT_SM_MODULE_PATH}")
 DNIe UI support:         ${enable_dnie_ui}
 Notification support:    ${enable_notify}
-Build tests:             ${enable_tests}
+Code coverage:           ${enable_code_coverage}
 
 PC/SC default provider:  ${DEFAULT_PCSC_PROVIDER}
 PKCS11 default provider: $(eval eval eval echo "${DEFAULT_PKCS11_PROVIDER}")
@@ -1178,6 +1191,7 @@ PCSC_CFLAGS:             ${PCSC_CFLAGS}
 CRYPTOTOKENKIT_CFLAGS:   ${CRYPTOTOKENKIT_CFLAGS}
 GIO2_CFLAGS:             ${GIO2_CFLAGS}
 GIO2_LIBS:               ${GIO2_LIBS}
+FUZZING_LIBS:            ${FUZZING_LIBS}
 
 EOF
 
